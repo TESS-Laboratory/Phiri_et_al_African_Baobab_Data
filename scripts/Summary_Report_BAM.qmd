@@ -1,563 +1,460 @@
 ---
-title: "BAM_Summary Report"
-format: pdf
+title: "Baobabs in Africa Mapped (BAM): summary of the public tree dataset"
+author: "Chafika Phiri"
+date: today
+date-format: "D MMMM YYYY"
+format:
+  pdf:
+    pdf-engine: xelatex
+    number-sections: true
+    colorlinks: true
+    papersize: a4
+    geometry: margin=1.5cm
 fig-cap-location: bottom
 tbl-cap-location: top
-table-numbering: true
 execute:
-  Warning: false
-  Message: false
-editor_options: visual
+  echo: false
+  warning: false
+  message: false
+knitr:
+  opts_chunk:
+    # cairo_pdf embeds system fonts such as Arial; the default pdf device cannot.
+    dev: cairo_pdf
+editor: visual
+params:
+  # Paths come from pipeline_paths.csv; a value given here overrides it.
+  public_data_file: ""
+  figures_folder: ""
 ---
 
-This is a summary report of the Baobabs in Africa Mapped (BAM) Project dataset, produced after undergoing Quality Assurance (QA) and Quality Control (QC) checks. The purpose is
-to vusualise the dataset.
+```{r}
+#| label: setup
 
-```{r, results = 'asis', echo = FALSE, warning=FALSE, message=FALSE}
-
-#| label: Setup
-
-
-# Load the required packages
-
-library(tidyverse)
-library(sf)
-library(rnaturalearth)
-library(rnaturalearthdata)
-library(knitr)
-library(writexl)
-library(janitor)
-library(WorldFlora)
-library(fuzzyjoin)
-library(patchwork)
-
-```
+# Introduction
+#
+# Reports the headline numbers and draws Figure 1 (map and tree sizes) and
+# Figure 2 (most frequent non-baobab species) to the Nature Portfolio figure
+# specifications used by Scientific Data, plus a map for the project web page.
 
 
-```{r, results = 'asis', echo = FALSE, warning=FALSE, message=FALSE}
+# Packages
 
-#| Warning: false
+required_packages <- c("readr", "dplyr", "tidyr", "stringr", "forcats", "ggplot2",
+                       "patchwork","scales", "sf", "rnaturalearth",
+                       "rnaturalearthdata", "knitr",
+                       "ragg", "systemfonts")
+missing_packages <- required_packages[!vapply(required_packages, requireNamespace,
+                                              logical(1), quietly = TRUE)]
+if (length(missing_packages) > 0) {
+  stop("Please install these packages first: ", paste(missing_packages, collapse = ", "),
+       call. = FALSE)
+}
 
-# load the cvs file
+suppressPackageStartupMessages({
+  library(readr)
+  library(dplyr)
+  library(tidyr)
+  library(stringr)
+  library(forcats)
+  library(ggplot2)
+  library(patchwork)
+  library(sf)
+})
 
-# Was:
-#bam_csv <- readr::read_csv("C:/Workspace/Baobabs_in_Africa_Mapped/Data/outputs/BAM_data_for_pu#blic.csv")
+# Figure settings (Nature Portfolio guide): widths of 89 or 183 mm, height of
+# at most 170 mm, Arial or Helvetica text of 5-7 pt, 8 pt bold panel labels,
+# lines of 0.25-1 pt.
 
-# Now:
-bam_csv <- readr::read_csv(targets::tar_read(public_data_file))
+single_column_mm   <- 89
+double_column_mm   <- 183
+maximum_height_mm  <- 170
+figure_1_height_mm <- 135
+figure_2_height_mm <- 85
+webpage_map_size_mm <- 210   
+figure_resolution_dpi <- 600
+text_size_pt        <- 7
+small_text_size_pt  <- 6
+panel_label_size_pt <- 8
+thin_line_pt     <- 0.25
+standard_line_pt <- 0.5
+line_width <- function(points) points / (ggplot2::.pt * 72 / 96)  # points to ggplot2 linewidth
+choose_figure_font <- function() {
+  preferred_fonts <- c("Arial", "Helvetica", "Liberation Sans", "Arimo")
+  installed_fonts <- unique(systemfonts::system_fonts()$family)
+  available <- intersect(preferred_fonts, installed_fonts)
+  if (length(available) == 0) {
+    warning("Neither Arial nor Helvetica is installed; the default sans-serif font is used.",
+            call. = FALSE)
+    return("sans")
+  }
+  available[1]
+}
+figure_font <- choose_figure_font()
+# Blue and orange remain distinct under common colour-vision deficiencies.
+tree_type_colours <- c("baobab" = "#2a78d6", "non-baobab" = "#eb6834", "not recorded" = "#8c8c8c")
+tree_type_labels  <- c("baobab" = "Baobab", "non-baobab" = "Non-baobab", "not recorded" = "Not recorded")
 
-# Clean the Full the name column by removing \r and \n and trim the white spaces
-
-bam_csv$full_name <- trimws(gsub("[\r\n]", "", bam_csv$full_name))
-
-# Select Unique names of our contributors
-
-n_observations <- nrow(bam_csv)
-contributors_list <- unique(bam_csv$full_name)
-country_list <- unique(bam_csv$Country)
-length_contributors_list <- length(contributors_list)
-length_countries <- length(country_list)
-
-# Print contributors names
-
-# print individual numbers
-
-n_baobabs <- sum(bam_csv$Tree_type == "Baobab")
-n_non_baobabs <- sum(bam_csv$Tree_type == "Non-Baobab")
-
-#table(bam_csv$Tree_type)
-
-#cat("The contributors of the dataset include:\n\n")
-
-#cat(paste(contributors_list, collapse = ", "))
-
-#colnames(bam_csv)
-
-# count individual numbers for each tree type
-
-#tree_count <- bam_csv |> 
-#  group_by(Tree_type) |> 
-#  summarise(count = n()) |> 
- # ungroup()
-
-#view(tree_count)
-
+number_of_species_shown <- 15
 
 ```
 
+```{r}
+#| label: read-data
 
-The dataset contains `r n_observations` individual tree observations; among them, `r n_baobabs` were baobabs and `r n_non_baobabs` were non-baobab trees .  
-The dataset was contributed by `r length_contributors_list` people (`r contributors_list`).  
-There are `r length_countries` countries (`r country_list`).
+# pipeline_paths.csv is written by step 1 in the folder of this document.
+if (!file.exists("pipeline_paths.csv")) {
+  stop("pipeline_paths.csv was not found next to this document. Run Harmonise_tree_data.R first.",
+       call. = FALSE)
+}
+pipeline_paths <- read_csv("pipeline_paths.csv", col_types = cols(.default = col_character()),
+                           na = character(), progress = FALSE)
+for (i in seq_len(nrow(pipeline_paths))) assign(pipeline_paths$name[i], pipeline_paths$value[i])
 
-```{r, results = 'asis', echo = FALSE, warning=FALSE, message=FALSE}
+# Variables are used by dictionary role, so they can be renamed in the
+# dictionary.
 
-#| label: Map-of-Africa
+dictionary_roles <- read_csv(dictionary_file, col_types = cols(.default = col_character()),
+                             progress = FALSE)[, c("variable_name", "role")]
+rename_to_roles <- function(table) {
+  hit <- names(table) %in% dictionary_roles$variable_name
+  names(table)[hit] <- dictionary_roles$role[match(names(table)[hit], dictionary_roles$variable_name)]
+  table
+}
+if (!identical(params$public_data_file, "")) public_data_file <- params$public_data_file
+if (!identical(params$figures_folder, ""))   figures_folder   <- params$figures_folder
+if (!file.exists(public_data_file)) {
+  stop("The public data file was not found: ", public_data_file,
+       ". Run QAQC_BAM_Data.qmd first.", call. = FALSE)
+}
 
-# Loading the map of Africa, which we shall use for checking the coordinates, 
-# if they fall within the continent of Africa.
 
-# Get the Africa map
+# Every value is read as text so that nothing changes on reading.
+public_data <- read_csv(public_data_file, col_types = cols(.default = col_character()),
+                        na = c("", "NA"), progress = FALSE) %>% rename_to_roles()
 
-africa_one <- ne_countries(continent = "Africa", returnclass = "sf")
+required_variables <- c("record_id", "tree_type", "latitude", "longitude", "country", "date",
+                        "observer_name", "circumference", "height", "crown_1", "crown_2",
+                        "accepted_species_name")
+missing_variables <- setdiff(required_variables, names(public_data))
+if (length(missing_variables) > 0) {
+  stop("These variables are missing from the public dataset: ",
+       paste(missing_variables, collapse = ", "), call. = FALSE)
+}
 
-# Convert the CRS to match the data frames.
+dir.create(figures_folder, recursive = TRUE, showWarnings = FALSE)
 
-sf_use_s2(FALSE)
+# Girth is converted to metres; canopy area is an ellipse from the two
+# perpendicular crown diameters.
+tree_data <- public_data %>%
+  transmute(
+    record_id,
+    tree_type      = factor(coalesce(tree_type, "not recorded"), levels = names(tree_type_colours)),
+    latitude       = as.numeric(latitude),
+    longitude      = as.numeric(longitude),
+    country,
+    year           = as.integer(str_sub(date, 1, 4)),
+    girth_m        = as.numeric(circumference) / 100,
+    height_m       = as.numeric(height),
+    crown_ns_m     = as.numeric(crown_1),
+    crown_ew_m     = as.numeric(crown_2),
+    canopy_area_m2 = pi * (crown_ns_m / 2) * (crown_ew_m / 2),
+    accepted_species_name, observer_name
+  )
 
-africa <- ne_countries(continent = "Africa", returnclass = "sf") |> 
-  st_union() |> 
-  st_as_sf()
-
+typed_trees <- filter(tree_data, tree_type != "not recorded") %>% mutate(tree_type = droplevels(tree_type))
 ```
 
+```{r}
+#| label: theme-and-helpers
 
-
-
-```{r, results = 'asis', echo = FALSE, warning=FALSE, message=FALSE}
-
-# Define the custom theme
-
-theme_fancy <- function() {
-  theme_bw() +
+theme_publication <- function() {
+  theme_classic(base_size = text_size_pt, base_family = figure_font,
+                base_line_size = line_width(standard_line_pt),
+                base_rect_size = line_width(standard_line_pt)) +
     theme(
-      text = element_text(family = "Helvetica"),
-      axis.text = element_text(size = 10, color = "black"),
-      axis.title = element_text(size = 10, color = "black"),
-      axis.line.x = element_line(linewidth = 0.5, color = "black"),
-      axis.line.y = element_line(linewidth = 0.5, color = "black"),
-      axis.ticks = element_line(linewidth = 0.4, color = "black"),
-      panel.border = element_blank(),
-      panel.grid.major.x = element_blank(),
-      panel.grid.minor.x = element_blank(),
-      panel.grid.minor.y = element_blank(),
-      panel.grid.major.y = element_blank(),
-      plot.margin = unit(c(0.5, 0.5, 0.5, 0.5), "cm"),
-      plot.title = element_text(
-        size = 10,
-        vjust = 1,
-        hjust = 0.5,
-        color = "black"
-      ),
-      legend.text = element_text(size = 8, color = "black"),
-      legend.title = element_text(size = 8, color = "black"),
-      legend.position = "bottom", #c(0.9, 0.9),
-      legend.key.size = unit(0.9, "line"),
-      legend.background = element_rect(
-        color = "black",
-        fill = "transparent",
-        linewidth = 2,
-        linetype = "blank"
-      )
+      text               = element_text(colour = "black"),
+      axis.title         = element_text(size = text_size_pt, colour = "black"),
+      axis.text          = element_text(size = small_text_size_pt, colour = "black"),
+      axis.line          = element_line(linewidth = line_width(standard_line_pt), colour = "black"),
+      axis.ticks         = element_line(linewidth = line_width(standard_line_pt), colour = "black"),
+      axis.ticks.length  = unit(1, "mm"),
+      panel.grid         = element_blank(),
+      legend.position    = "bottom",
+      legend.title       = element_text(size = text_size_pt, colour = "black"),
+      legend.text        = element_text(size = small_text_size_pt, colour = "black"),
+      legend.key.size    = unit(3, "mm"),
+      legend.margin      = margin(0, 0, 0, 0),
+      plot.tag           = element_text(size = panel_label_size_pt, face = "bold", colour = "black"),
+      plot.subtitle      = element_text(size = small_text_size_pt, colour = "black",
+                                        margin = margin(b = 1.5, unit = "mm")),
+      plot.margin        = margin(2, 3, 2, 2, unit = "mm"),
+      strip.background   = element_blank()
     )
 }
-windowsFonts("Helvetica" = windowsFont("Helvetica")) # Ensure font is mapped correctly
 
+
+legend_tree_types <- c("baobab", "non-baobab")
+scale_tree_colour <- scale_colour_manual(values = tree_type_colours, labels = tree_type_labels[legend_tree_types],
+                                         breaks = legend_tree_types, name = "Tree type", drop = TRUE)
+scale_tree_fill   <- scale_fill_manual(values = tree_type_colours, labels = tree_type_labels[legend_tree_types],
+                                       breaks = legend_tree_types, name = "Tree type", drop = TRUE)
+
+
+sample_size_label <- function(data, ...) {
+  counts <- data %>%
+    filter(if_all(c(...), ~ !is.na(.x))) %>%
+    count(tree_type)
+  paste0("n = ", paste(format(counts$n, big.mark = ",", trim = TRUE), str_to_lower(tree_type_labels[as.character(counts$tree_type)]),
+                       collapse = "; "))
+}
+
+add_sample_size <- function(label) {
+  labs(subtitle = label)
+}
+
+
+describe_distribution <- function(values, unit, digits = 1) {
+  values <- values[!is.na(values)]
+  quartiles <- quantile(values, c(0.25, 0.5, 0.75))
+  sprintf(paste0("%.", digits, "f %s (IQR %.", digits, "f\u2013%.", digits, "f %s)"),
+          quartiles[2], unit, quartiles[1], quartiles[3], unit)
+}
+
+
+save_journal_figure <- function(figure, file_stem, width_mm, height_mm) {
+  if (height_mm > maximum_height_mm) {
+    warning(file_stem, " is taller than ", maximum_height_mm, " mm.", call. = FALSE)
+  }
+  ggsave(file.path(figures_folder, paste0(file_stem, ".pdf")), figure,
+         width = width_mm, height = height_mm, units = "mm", bg = "white",
+         device = cairo_pdf)
+  ggsave(file.path(figures_folder, paste0(file_stem, ".png")), figure,
+         width = width_mm, height = height_mm, units = "mm", bg = "white",
+         dpi = figure_resolution_dpi, device = ragg::agg_png)
+}
+
+# Panel labels
+panel_tags <- plot_annotation(tag_levels = "a")
 ```
 
+```{r}
+#| label: summary-numbers
 
-We plotted the girth probability density distribution curves for the dataset (Figure 1). The Non-Baobab trees shows a high peaks at smaller girths, between 1 and 2 metres, indicating that most of these trees have relatively slender trunks. Non-Baobab trees display a sharper peak near the smallest canopy sizes, which means that a greater proportion of these trees in the dataset have a small limited canopy spread. In contrast, baobab trees have shown a broader distribution, with few small-girthed individuals and a substantial proportion extending into larger girth categories, some trees are exceeding 16 metres. The overlap between the two distributions at lower girth values indicates some similarity in smaller sized trees, yet the divergence at larger sizes could be explained by the fact that most baobabs have massive trunks within African landscapes.
-
-
-```{r, results = 'asis', echo = FALSE, out.height = "40%", out.width = "100%", fig.cap = "Girth probability density distribution", warning=FALSE, message=FALSE}
-
-#| label: fig-girth-density
-#.............plot tree girth
-# Density plot with normalized probabilities for tree girth
-Plot_girth_BAM <- ggplot(bam_csv, aes(x = stem_one_cir / 100, 
-                                      fill = Tree_type, 
-                                      color = Tree_type)) +
-  geom_density(alpha = 0.6, linewidth = 0.6) +
-  labs(
-    x = "Girth (m)",
-    y = "Probability Density",
-    fill = "Tree Type",  
-    color = "Tree Type"
-  ) +
-  scale_x_continuous(
-    breaks = seq(0, 35, by = 5), 
-    limits = c(0, 35)
-  ) +
-  scale_y_continuous(limits = c(0, 1)) +  
-  scale_fill_manual(values = c("Non-Baobab" = "skyblue", "Baobab" = "darkblue")) + 
-  scale_color_manual(values = c("Non-Baobab" = "skyblue", "Baobab" = "darkblue")) +  
-  theme_fancy() 
-Plot_girth_BAM
-#Save the plot with A4 dimensions at 600 DPI
-ggsave(
-  filename = "C:/Workspace/Baobabs_in_Africa_Mapped/Data/outputs/Plots/Plot_girth_BAM.png",
-  plot = Plot_girth_BAM, 
-  width = 21.0,    # A4 width in cm
-  height = 14.85,   # A4 height in cm (landscape)
-  units = "cm",
-  dpi = 600
-)
+number_of_records   <- nrow(tree_data)
+number_of_baobabs   <- sum(tree_data$tree_type == "baobab")
+number_of_others    <- sum(tree_data$tree_type == "non-baobab")
+number_untyped      <- sum(tree_data$tree_type == "not recorded")
+country_names       <- sort(unique(na.omit(tree_data$country)))
 
 
+# The number of contributed datasets comes from step 3, as source files are
+# not published.
+manuscript_numbers_file <- file.path(qaqc_results_folder, "manuscript_numbers.csv")
+number_of_datasets <- NA_integer_
+if (file.exists(manuscript_numbers_file)) {
+  manuscript_numbers <- read_csv(manuscript_numbers_file, col_types = cols(.default = col_character()),
+                                 progress = FALSE)
+  number_of_datasets <- as.integer(manuscript_numbers$value[manuscript_numbers$quantity == "Source files"][1])
+}
+
+# "Anonymous" is not a person and is not counted among named observers.
+named_observers <- tree_data$observer_name %>%
+  na.omit() %>%
+  str_split("\\s*;\\s*") %>%
+  unlist() %>%
+  str_squish() %>%
+  setdiff(c("", "Anonymous")) %>%
+  sort()
+
+survey_years <- sort(unique(na.omit(tree_data$year)))
+
+country_ranking   <- sort(table(tree_data$country), decreasing = TRUE)
+top_two_countries <- names(country_ranking)[1:2]
+top_two_share     <- round(100 * sum(country_ranking[1:2]) / number_of_records, 1)
+
+format_count <- function(x) format(x, big.mark = ",")
 ```
 
-We plotted the canopy areas probability density distribution curves for the dataset (Figure 2). Both baobab and non-baobab have exhibited small canopy areas, with canopy areas peaking below 2 m². Non-Baobab trees shows a sharper peak near the smallest canopy sizes, which means that a greater proportion of these trees in the dataset have a small limited canopy spread. However, Baobab trees have shown a broader distribution with a heavier right tail, indicating the presence of some individuals with substantially larger canopies, extending beyond 6 m² and, in rare cases, exceeding 16 m². The differences in canopy growth characteristics between the two groups, can potentially be linked to species-specific morphology, ecological settings and environmental conditions across the surveyed regions.
+# Overview
 
+This report summarises the public dataset of the *Baobabs in Africa Mapped (BAM) Project*, produced after harmonisation and quality assurance and quality control (QA/QC). The dataset contains `r format_count(number_of_records)` tree observations: `r format_count(number_of_baobabs)` baobabs (*Adansonia digitata*), `r format_count(number_of_others)` non-baobab trees and `r format_count(number_untyped)` trees whose type was not recorded. The observations come from `r if (is.na(number_of_datasets)) "several" else number_of_datasets` contributed datasets, cover `r length(country_names)` countries (`r paste(country_names, collapse = ", ")`) and were made between `r min(survey_years)` and `r max(survey_years)`. `r length(named_observers)` observers agreed to be named publicly.
 
-```{r, results = 'asis', echo = FALSE, out.height = "40%", out.width = "100%", fig.cap = "Canopy areas probability density distribution", warning=FALSE, message=FALSE}
-
-#| label: fig-canopy-density
-
-# Calculate canopy areas for all trees
-BAM_canopy_areas <- bam_csv |>
-  mutate(
-    canopy_areas = pi * (ns_crown_width / 2) * (ew_crown_width / 2)
-  )
-
-# Density plot for canopy areas
-Plot_BAM_canopies <- ggplot(BAM_canopy_areas, aes(x = canopy_areas, 
-                                                   fill = Tree_type, 
-                                                   color = Tree_type)) +
-  geom_density(alpha = 0.6, linewidth = 0.6) +
-  labs(
-    x = "Canopy Area (sq. meters)",
-    y = "Probability Density",
-    fill = "Tree Type",  
-    color = "Tree Type"
-  ) +
-  scale_x_continuous(
-    breaks = seq(0, 700, by = 100), 
-    limits = c(0, 700)
-  ) +
-  #scale_y_continuous(limits = c(0, 1)) +
-  scale_fill_manual(values = c("Non-Baobab" = "skyblue", "Baobab" = "darkblue")) + 
-  scale_color_manual(values = c("Non-Baobab" = "skyblue", "Baobab" = "darkblue")) +  
-  theme_fancy() 
-
-Plot_BAM_canopies
-
-# Save the plot with A4 dimensions at 600 DPI
-ggsave(
-  filename = "C:/Workspace/Baobabs_in_Africa_Mapped/Data/outputs/Plots/Plot_BAM_canopies.png",
-  plot = Plot_BAM_canopies, 
-  width = 21.0,    # A4 width in cm
-  height = 14.85,   # A4 height in cm (landscape)
-  units = "cm",
-  dpi = 600
-)
-
-
+```{r}
+#| label: tbl-summary
+#| tbl-cap: "Summary of the public dataset."
+knitr::kable(tibble(
+  Measure = c("Tree observations", "Baobab observations", "Non-baobab observations"
+              ,"Tree type not recorded", "Countries", "Contributed datasets",
+              "Survey years", "Observers named with consent"),
+  Value = c(format_count(c(number_of_records, number_of_baobabs, number_of_others, number_untyped,
+                           length(country_names))),
+            if (is.na(number_of_datasets)) "not available" else format_count(number_of_datasets),
+            paste(min(survey_years), "to", max(survey_years)),
+            format_count(length(named_observers)))
+), format = "pipe", align = "lr")
 ```
 
+# Distribution and size of the trees
 
+@fig-distribution-size shows where the trees were recorded and how their size differs between baobabs and non-baobab trees. The two best-represented countries, `r top_two_countries[1]` and `r top_two_countries[2]`, together account for `r format_count(sum(country_ranking[1:2]))` records (`r top_two_share`%). Baobabs have a median stem girth of `r describe_distribution(typed_trees$girth_m[typed_trees$tree_type == "baobab"], "m", 2)`, compared with `r describe_distribution(typed_trees$girth_m[typed_trees$tree_type == "non-baobab"], "m", 2)` for non-baobab trees. Median heights are `r describe_distribution(typed_trees$height_m[typed_trees$tree_type == "baobab"], "m")` for baobabs and `r describe_distribution(typed_trees$height_m[typed_trees$tree_type == "non-baobab"], "m")` for non-baobab trees, and median canopy areas are `r describe_distribution(typed_trees$canopy_area_m2[typed_trees$tree_type == "baobab"], "m\u00b2", 0)` and `r describe_distribution(typed_trees$canopy_area_m2[typed_trees$tree_type == "non-baobab"], "m\u00b2", 0)` respectively.
 
-To understand the distribution of species in our dataset, we plotted a histogram (Figure 3). The species frequency distribution reveals a highly uneven pattern, characterised by a Unknown species (species that were not identified by contributors). This skewed distribution was expected, given the variation in data sources across contributors. However, despite this variability, the dataset provides valuable insights, which are essential for subsequent analyses.
+```{r}
+#| label: fig-distribution-size
+#| fig-cap: "Distribution and size of baobab and non-baobab trees in the BAM public dataset. **a**, Locations of tree observations, coloured by tree type; grey points are trees whose type was not recorded. **b**–**d**, Probability density of stem girth (**b**), tree height (**c**) and canopy area (**d**); canopy area is calculated as an ellipse from the two perpendicular crown diameters. Girth and canopy area are shown on logarithmic axes. n gives the number of trees in each panel; trees whose type was not recorded are not shown in **b**–**d**."
+#| fig-width: 7.205
+#| fig-height: 5.315
+#| out-width: "100%"
+#| fig-pos: "htbp"
 
 
-```{r, results = 'asis', echo = FALSE, out.height = "40%", out.width = "100%", fig.cap = "Species distribution", warning=FALSE, message=FALSE}
+sf_use_s2(FALSE)  # planar operations are sufficient for drawing
+world_countries <- rnaturalearth::ne_countries(scale = "medium", returnclass = "sf")
+map_countries   <- filter(world_countries, continent == "Africa")
 
-# Distribution of various species in the "Non baobab species name" column
-# Replacing "NA values" with "Unknown"
-
-#Non_Baobabs <- filter(bam_csv, Tree_type == "Non-Baobab")
-
-#species_data <- Non_Baobabs |>
-#  mutate(scientificName = replace_na(scientificName, "Unknown"))
-
-# plot
-
-#plot_species_distribution <- ggplot(species_data, aes(x = fct_infreq(scientificName))) +
-#  geom_bar(fill = "grey", color = "black") +
-#  labs(
-    #title = "Species Distribution",
-#    x = "Species",
-#    y = "Frequency"
-#  ) +
-#  theme_fancy() +
-#  theme(
-#    axis.text.x = element_text(angle = 60, hjust = 1, size = 10, color = "black"),
-#    axis.text.y = element_text(size = 10, color = "black"),
-#    axis.title = element_text(size = 10, color = "black")
-#  )
-
-
-#plot_species_distribution
-
-# Save the plot
-
-#ggsave(
-#  filename = "Data/outputs/Plots/plot_species_distribution.png",
-#  plot = plot_species_distribution, 
-#  width = 21.0, 
-#  height = 14.85,
-#  units = "cm",
-#  dpi = 600,
-#)
-
-```
-
-
-
-
-
-```{r, results = 'asis', echo = FALSE, out.height = "40%", out.width = "100%", fig.cap = "Non-baobab species distribution", warning=FALSE, message=FALSE}
-
-#| label: fig-species-distribution
-
-# Filter and prepare Non-Baobab species data
-species_data <- bam_csv |>
-  filter(Tree_type == "Non-Baobab") |>
-  mutate(scientificName = replace_na(scientificName, "Unknown"))
-
-# Create species distribution plot in portrait orientation
-plot_species_distribution <- ggplot(species_data, aes(x = fct_rev(fct_infreq(scientificName)))) +
-  geom_bar(fill = "skyblue", color = "grey30", width = 0.7, alpha = 0.8) +
-  labs(
-    x = "Species",
-    y = "Count"
-  ) +
-  scale_y_log10() +
-  coord_flip() +  # Rotate to portrait orientation
-  #scale_x_log10() +
-  theme_fancy() +
-  theme(
-    axis.text.y = element_text(size = 10, face = "italic", color = "black"),  # Species names in italics
-    axis.text.x = element_text(size = 10, color = "black"),
-    axis.title = element_text(size = 11, face = "plain", color = "black"),
-    #panel.grid.major.y = element_line(color = "grey90"),
-    panel.grid.minor = element_blank(),
-    plot.margin = margin(10, 10, 10, 10)
-  )
-
-plot_species_distribution
-
-# Save the plot at half A4 width, full height
-ggsave(
-  filename = "C:/Workspace/Baobabs_in_Africa_Mapped/Data/outputs/Plots/plot_species_distribution_rotated.png",
-  plot = plot_species_distribution, 
-  width = 21.0,     # Full A4 width in cm
-  height = 29.7,    # Full A4 height in cm (portrait)
-  units = "cm",
-  dpi = 600,
-  bg = "white"
-)
-
-
-```
-
-
-
-
-
-
-
-
-
-
-
-To understand the height distribution of tree in our dataset, we plotted a histogram (Figure 4)
-
-```{r, results = 'asis', echo = FALSE, out.height = "40%", out.width = "100%",warning=FALSE, message=FALSE}
-
-#| label: fig-height-density
-
-#.............plot tree height
-
-#| label: fig-height-density
-
-# Density plot for tree heights
-Plot_height_BAM <- ggplot(bam_csv, aes(x = height, 
-                                        fill = Tree_type, 
-                                        color = Tree_type)) +
-  geom_density(alpha = 0.6, linewidth = 0.6, na.rm = TRUE) +
-  labs(
-    x = "Height (m)",
-    y = "Probability Density",
-    fill = "Tree Type",  
-    color = "Tree Type"
-  ) +
-  scale_x_continuous(
-    breaks = seq(0, 35, by = 5), 
-    limits = c(0, 35)
-  ) +
-  #scale_y_continuous(limits = c(0, 1)) +
-  scale_fill_manual(values = c("Non-Baobab" = "skyblue", "Baobab" = "darkblue")) + 
-  scale_color_manual(values = c("Non-Baobab" = "skyblue", "Baobab" = "darkblue")) +  
-  theme_fancy() 
-
-Plot_height_BAM
-
-# Save the plot with A4 dimensions at 600 DPI
-ggsave(
-  filename = "C:/Workspace/Baobabs_in_Africa_Mapped/Data/outputs/Plots/Plot_height_BAM.png",
-  plot = Plot_height_BAM, 
-  width = 21.0,    
-  height = 14.85,   
-  units = "cm",
-  dpi = 600
-)
-
-```
-
-
-
-
-
-
-```{r, results = 'asis', echo = FALSE, out.height = "40%", out.width = "100%",warning=FALSE, message=FALSE}
-
-#| label: Summary-table
-
-# Generate a summary table of contributers, observations and countries.
-
-#n_observations <- nrow(bam_csv)
-#n_contributors <- n_distinct(bam_csv$Email)
-#n_countries <- n_distinct(bam_csv$Country)
-
-# Create a summary
-
-#summary_data <- tibble(
- # Metric = c("Number of Observations", "Number of Contributors", 
-     #        "Number of Countries"),
-#  Value = c(n_observations, n_contributors, n_countries)
-#)
-
-# Display the summary table 
-
-#knitr::kable(summary_data, "pipe", caption = "Summary of the number of observations in the BAM dataset")
-
-```
-
-
-To understand the spatial distribution of tree data collection across Africa, the geographic locations of tree observations are plotted as individual points on the map (Figure 4), showing where each tree was recorded across the continent. The tree locations are displayed at a coarser scale to enhance visual clarity.
-
-
-```{r, fig.cap = "Geographic Locations of Tree Observations", results = 'asis', echo = FALSE, out.height = "40%", out.width = "100%", warning=FALSE, message=FALSE}
-
-#| label: Map
-
-# Convert bam_data to sf object
-
-clean_data_sf <- bam_csv |> 
+tree_points <- tree_data %>%
+  filter(!is.na(latitude), !is.na(longitude)) %>%
+  arrange(tree_type == "non-baobab") %>%
   st_as_sf(coords = c("longitude", "latitude"), crs = 4326)
 
-# Plot map with observation points
+# The map frame is mainland Africa and Madagascar; small outlying islands do
+# not set it. It widens only if a tree lies outside.
+minimum_land_area_sq_degrees <- 1
+africa_land_parts <- st_cast(st_geometry(map_countries), "POLYGON")
+land_part_area    <- as.numeric(st_area(st_set_crs(africa_land_parts, NA)))
+africa_main_land  <- africa_land_parts[land_part_area >= minimum_land_area_sq_degrees]
+africa_frame      <- st_bbox(africa_main_land)
 
-ggplot() +
-  geom_sf(data = africa_one, color = "black") +
-  geom_sf(data = clean_data_sf, 
-          color = "darkgreen", size = 0.4, alpha = 0.6) +
-  coord_sf(lims_method = "geometry_bbox") + 
-  theme_void() +
-  theme(
-    panel.grid = element_blank(),
-    axis.ticks = element_blank(),
-    axis.line = element_blank(),
-    panel.background = element_blank()
-  )
+points_frame       <- st_bbox(tree_points)
+map_margin_degrees <- 2
+map_extent <- c(xmin = min(africa_frame[["xmin"]], points_frame[["xmin"]]) - map_margin_degrees,
+                xmax = max(africa_frame[["xmax"]], points_frame[["xmax"]]) + map_margin_degrees,
+                ymin = min(africa_frame[["ymin"]], points_frame[["ymin"]]) - map_margin_degrees,
+                ymax = max(africa_frame[["ymax"]], points_frame[["ymax"]]) + map_margin_degrees)
 
+# Coordinates are written as plain text so the degree sign prints on every
+# system.
+format_longitude <- function(degrees) {
+  paste0(abs(degrees), "\u00b0", ifelse(degrees > 0, "E", ifelse(degrees < 0, "W", "")))
+}
+format_latitude <- function(degrees) {
+  paste0(abs(degrees), "\u00b0", ifelse(degrees > 0, "N", ifelse(degrees < 0, "S", "")))
+}
+
+panel_map <- ggplot() +
+  geom_sf(data = world_countries, fill = "white", colour = "grey75", linewidth = line_width(thin_line_pt)) +
+  geom_sf(data = map_countries, fill = "grey92", colour = "grey55", linewidth = line_width(thin_line_pt)) +
+  geom_sf(data = tree_points, aes(fill = tree_type), shape = 21, colour = "white",
+          stroke = line_width(thin_line_pt) / 2, size = 1.1, alpha = 0.85) +
+  coord_sf(xlim = unname(map_extent[c("xmin", "xmax")]), ylim = unname(map_extent[c("ymin", "ymax")]),
+           expand = FALSE) +
+  scale_x_continuous(breaks = seq(-20, 60, by = 20), labels = format_longitude) +
+  scale_y_continuous(breaks = seq(-30, 30, by = 15), labels = format_latitude) +
+  scale_tree_fill +
+  guides(fill = guide_legend(override.aes = list(size = 2, alpha = 1))) +
+  labs(x = NULL, y = NULL) +
+  theme_publication() +
+  theme(panel.background = element_rect(fill = "#eef3f8", colour = NA),
+        axis.line = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "black", linewidth = line_width(standard_line_pt)))
+
+density_panel <- function(variable, x_label, log_scale = FALSE) {
+  panel <- ggplot(filter(typed_trees, !is.na(.data[[variable]])),
+                  aes(x = .data[[variable]], fill = tree_type, colour = tree_type)) +
+    geom_density(alpha = 0.35, linewidth = line_width(0.75), adjust = 1) +
+    add_sample_size(sample_size_label(typed_trees, all_of(variable))) +
+    scale_tree_fill + scale_tree_colour +
+    scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
+    labs(x = x_label, y = "Probability density") +
+    theme_publication()
+  if (log_scale) {
+    panel <- panel + scale_x_log10(labels = scales::label_number(drop0trailing = TRUE, big.mark = ","))
+  }
+  panel
+}
+
+panel_girth_density  <- density_panel("girth_m", "Stem girth (m)", log_scale = TRUE)
+panel_height_density <- density_panel("height_m", "Tree height (m)")
+canopy_axis_label    <- expression("Canopy area (m"^2*")")
+panel_canopy_density <- density_panel("canopy_area_m2", canopy_axis_label, log_scale = TRUE)
+
+no_legend <- guides(fill = "none", colour = "none")
+panel_girth_density  <- panel_girth_density  + no_legend
+panel_height_density <- panel_height_density + no_legend
+panel_canopy_density <- panel_canopy_density + no_legend
+
+# The map fills the left of the figure; the density panels are stacked on the
+# right. Brackets are needed because | binds less tightly than +.
+figure_distribution_size <- (panel_map |
+  (panel_girth_density / panel_height_density / panel_canopy_density)) +
+  plot_layout(widths = c(2.1, 1), guides = "collect") +
+  panel_tags &
+  theme(legend.position = "bottom")
+
+save_journal_figure(figure_distribution_size, "figure_1_distribution_and_size",
+                    width_mm = double_column_mm, height_mm = figure_1_height_mm)
+figure_distribution_size
 ```
 
+# Species composition
 
+```{r}
+#| label: species-numbers
 
-```{r, results = 'asis', echo = FALSE, warning=FALSE, message=FALSE}
+non_baobabs <- filter(typed_trees, tree_type == "non-baobab")
+if (all(is.na(non_baobabs$accepted_species_name))) {
+  stop("No non-baobab tree has an accepted species name. Set wfo_backbone_file in ",
+       "Harmonise_tree_data.R and render QAQC_BAM_Data.qmd again.", call. = FALSE)
+}
 
-#| label: Map for the webpage
-# Create outer boundary of Africa
-#| label: fig-webpage-map
+species_counts <- non_baobabs %>%
+  filter(!is.na(accepted_species_name)) %>%
+  count(accepted_species_name, name = "records") %>%
+  rename(name = accepted_species_name) %>%
+  arrange(desc(records))
 
-# Create outer boundary of Africa
+species_shown <- head(species_counts, number_of_species_shown)
 
-africa_outline <- africa_one |> 
-  st_union() |>       
-  st_as_sf()
+non_baobabs_without_name <- sum(is.na(non_baobabs$accepted_species_name))
+```
 
-# Convert observation points to sf object
+@fig-species shows the `r number_of_species_shown` most frequently recorded non-baobab species. Species are shown by their accepted names in the World Flora Online (WFO) taxonomic backbone; `r format_count(non_baobabs_without_name)` non-baobab trees have no accepted species name (no species recorded, or a name that could not be matched exactly at species level) and are not shown.
 
-clean_data_sf <- bam_csv |> 
-  st_as_sf(coords = c("longitude", "latitude"), crs = 4326)
+```{r}
+#| label: fig-species
+#| fig-cap: !expr paste0("The ", number_of_species_shown, " most frequently recorded non-baobab species in the BAM public dataset, by accepted name in World Flora Online.")
+#| fig-width: 3.504
+#| fig-height: 3.346
+#| fig-align: "center"
+#| fig-pos: "htbp"
 
-# Create map for webpage
+figure_species <- ggplot(species_shown, aes(x = records, y = fct_reorder(name, records))) +
+  geom_col(width = 0.7, fill = tree_type_colours[["non-baobab"]]) +
+  scale_x_continuous(labels = scales::label_comma(),
+                     expand = expansion(mult = c(0, 0.05))) +  # Bars start at zero.
+  labs(x = "Number of non-baobab trees", y = NULL) +
+  theme_publication() +
+  theme(axis.text.y = element_text(face = "italic"),
+        axis.ticks.y = element_blank())
 
+save_journal_figure(figure_species, "figure_2_species",
+                    width_mm = single_column_mm, height_mm = figure_2_height_mm)
+figure_species
+```
+
+```{r}
+#| label: map-for-webpage
+
+# Transparent map of the observations for the project web page; saved, not shown.
+africa_outline <- st_union(map_countries)
 map_for_webpage <- ggplot() +
-  geom_sf(data = africa_one, color = "grey60", fill = "grey95", linewidth = 0.2) +   
-  geom_sf(data = clean_data_sf, color = "darkgreen", size = 3, alpha = 0.8) +  
-  geom_sf(data = africa_outline, color = "black", fill = NA, linewidth = 0.2) +     
+  geom_sf(data = map_countries, colour = "grey60", fill = "grey95", linewidth = 0.2) +
+  geom_sf(data = tree_points, colour = "#1b7837", size = 1.2, alpha = 0.8) +
+  geom_sf(data = africa_outline, colour = "black", fill = NA, linewidth = 0.2) +
+  coord_sf(xlim = unname(map_extent[c("xmin", "xmax")]), ylim = unname(map_extent[c("ymin", "ymax")]), expand = FALSE) +
   theme_void() +
-  theme(
-    panel.background = element_rect(fill = "transparent", color = NA),
-    plot.background  = element_rect(fill = "transparent", color = NA)
-  )
-
-map_for_webpage
-
-# Save with timestamped filename and transparent background
-
-timestamp <- format(Sys.time(), "%Y-%m-%d_%H-%M-%S")
-filename  <- file.path("C:/Workspace/Baobabs_in_Africa_Mapped/Data/outputs/Plots",
-                       paste0("webpage_map_", timestamp, ".png"))
-
-ggsave(
-  filename = filename,
-  plot     = map_for_webpage, 
-  width    = 21.0,
-  height   = 14.85,
-  units    = "cm",
-  dpi      = 600,
-  bg       = "transparent"
-)
-
+  theme(panel.background = element_rect(fill = "transparent", colour = NA),
+        plot.background  = element_rect(fill = "transparent", colour = NA))
+ggsave(file.path(figures_folder, "webpage_map.png"), map_for_webpage,
+       width = webpage_map_size_mm, height = webpage_map_size_mm, units = "mm",
+       dpi = figure_resolution_dpi, bg = "transparent", device = ragg::agg_png)
 ```
-
-plot a panel
-
-```{r, results = 'asis', echo = FALSE, warning=FALSE, message=FALSE}
-
-# Plot the panel
-
-#| label: fig-panel-plot
-
-# Create panel plot with proper layout
-#panel_plot <- (
-#  (map_for_webpage + Plot_girth_BAM) / 
-#  (Plot_BAM_canopies + Plot_height_BAM)
-#) +
-#  plot_layout(
-#    guides = "collect",
-#    heights = c(1, 1)  
-#  ) &
-  
-  panel_plot <- (
-  (map_for_webpage + Plot_girth_BAM) / 
-  (Plot_BAM_canopies + Plot_height_BAM)
-) +
-  plot_layout(guides = "collect") &
-  theme(
-    legend.position = "bottom",
-    legend.direction = "horizontal"
-  ) &
-  plot_annotation(
-    tag_levels = 'a',
-    tag_prefix = '(',
-    tag_suffix = ')'
-  ) &
-  theme(
-    plot.tag = element_text(size = 10, face = "plain"),
-    legend.text = element_text(size = 10),
-    legend.title = element_text(size = 10, face = "plain"),
-    axis.text = element_text(size = 10),
-    axis.title = element_text(size = 10, face = "plain"),
-    panel.spacing.x = unit(1, "lines")
-  )
-
-panel_plot
-
-# Save the plot at A4 portrait size with high resolution
-
-ggsave(
-  filename = "C:/Workspace/Baobabs_in_Africa_Mapped/Data/outputs/Plots/panel_plot_BAM.png",
-  plot = panel_plot, 
-  width = 21.0,     
-  height = 29.7,    
-  units = "cm",
-  dpi = 600,        
-  bg = "white"
-)
-
-```
-
