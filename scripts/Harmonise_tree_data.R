@@ -1343,8 +1343,8 @@ for (pair in list(c(variable_for("dbh"), variable_for("circumference")),
   }
 }
 
-# A diameter that equals circumference / pi was calculated, not measured, and
-# is removed.
+# DBH is kept as recorded. A column whose DBH equals circumference / pi was
+# probably calculated by the contributor; it is logged for review, not removed.
 circ_var <- variable_for("circumference"); dbh_var <- variable_for("dbh")
 if (!is.na(circ_var) && !is.na(dbh_var)) {
   for (key in unique(sheet_key)) {
@@ -1352,8 +1352,7 @@ if (!is.na(circ_var) && !is.na(dbh_var)) {
     if (length(rows) < 3) next
     ratio <- records[[dbh_var]][rows] * pi / records[[circ_var]][rows]
     if (mean(abs(ratio - 1) < 0.03) >= 0.8) {
-      log_values(dbh_var, rows, "diameter calculated from the circumference (circumference / pi); removed")
-      records[[dbh_var]][sheet_key == key] <- NA
+      log_values(dbh_var, rows, "DBH equals circumference / pi (probably calculated by the contributor); kept as recorded")
     }
   }
 }

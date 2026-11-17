@@ -27,8 +27,9 @@ The Baobab in Africa Mapped (BAM) project aims to create an open-source, communi
 | *Harmonise_tree_data.R* | Reads individual contributor files and harmonises their column names and variables against the BAM variable dictionary. |
 | *TRY_comparison_check.R* | Identifies potential duplicate records by cross-referencing all *Adansonia* observations in the TRY database (Version 7) against the harmonised BAM baobab records. |
 | *QAQC_BAM_Data.qmd* | Performs quality checks including validation, exclusion, correction, privacy and publication rules; generates the public dataset. |
-| *Summary_report_BAM.qmd* | Generates summary statistics, spatial distribution maps, and visualisations to provide an overview of the BAM datase. |
 | *Environmental_covariates.R* | Extracts environmental covariates for every baobab location, including climate, soil, topography, and protected-area status. |
+| *Summary_report_BAM.qmd* | Generates summary statistics, spatial distribution maps, and visualisations to provide an overview of the BAM datase. |
+
 
 ### Data
 
@@ -63,7 +64,7 @@ Scripts should be run in numerical order:
 1. *Harmonise_tree_data.R* 
 2. *TRY_comparison_check.R*
 3. *QAQC_BAM_Data.qmd*
-4. *Summary_report_BAM.qmd*
-5. *Environmental_covariates.R*
+4. *Environmental_covariates.R*
+5. *Summary_report_BAM.qmd*
 
 ---

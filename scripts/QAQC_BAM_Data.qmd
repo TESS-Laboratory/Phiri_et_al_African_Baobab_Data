@@ -100,14 +100,16 @@ sensitive_species <- c("Warburgia salutaris")
 # Ranks accepted as a species-level identification.
 species_level_ranks <- c("species", "subspecies", "variety", "form")
 
-# TRUE shows "Anonymous" for observers who declined to be named.
+# TRUE shows a name only where the observer answered "yes" to being named;
+# any other answer ("no", "unknown" or blank) shows "Anonymous".
 withhold_names_answered_no <- TRUE
 anonymous_label <- "Anonymous"
 
 # Variables (names or roles) withheld from the public file in addition to
 # e-mail addresses. "species" is the species as recorded; the public file
-# carries the accepted WFO name instead.
-withheld_from_public_file <- c("feature_id", "tree_id", "tree_status", "tree_health",
+# carries the accepted WFO name instead. The tree identifier is published so
+# that repeat observations of the same tree can be linked.
+withheld_from_public_file <- c("feature_id", "tree_status", "tree_health",
                                "public_access", "species")
 
 source_column_prefix   <- "source_"
@@ -137,7 +139,7 @@ words_accepted_in_comments <- c("baobab", "baobabs", "Adansonia", "DBH", "GPS", 
 standard_descriptions <- tribble(
   ~role,             ~unit,             ~description,
   "feature_id",      NA,                "Identifier of the feature in the contributor's file.",
-  "tree_id",         NA,                "Identifier of the tree given by the contributor.",
+  "tree_id",         NA,                "Identifier of the tree given by the contributor; records with the same tree_id are observations of the same tree.",
   "date",            NA,                "Date of the observation (ISO 8601: YYYY-MM-DD, YYYY-MM or YYYY).",
   "observer_name",   NA,                "Name of the person who recorded the tree, or Anonymous.",
   "observer_email",  NA,                "E-mail address of the observer.",
@@ -154,7 +156,7 @@ standard_descriptions <- tribble(
   "crown_1",         "m",               "Crown diameter along the north-south axis.",
   "crown_2",         "m",               "Crown diameter along the east-west axis.",
   "multiple_stems",  NA,                "Whether the tree has more than one stem (yes/no).",
-  "elephant_damage", NA,                "Damage to the tree by elephants, as recorded.",
+  "elephant_damage", NA,                "Evidence or severity of elephant damage, as recorded; coding differs between sources.",
   "tree_status",     NA,                "Whether the tree was alive or dead when recorded.",
   "tree_health",     NA,                "Condition of the tree, as recorded by the observer.",
   "photo",           NA,                "File name of the photograph of the tree.",
@@ -175,11 +177,10 @@ derived_variables <- tribble(
   "record_id",              "yes",      "Persistent identifier of the record, derived from its source file, sheet and row.",
   "country",                "yes",      "Country in which the tree lies, from Natural Earth country boundaries (1:50 million).",
   "accepted_species_name",  "yes",      "Accepted scientific name in the World Flora Online (WFO) taxonomic backbone.",
-  "data_collection_method", "yes",      "Data collection method: the name of the raw-input folder that holds the source file.",
+  "data_collection_method", "yes",      "Data collection method: crowdsourced (BAM protocol) or independently contributed.",
   "taxonomic_status",       "no",       "Status of the matched name in the WFO backbone.",
   "family",                 "no",       "Plant family in the WFO backbone.",
   "wfo_taxon_id",           "no",       "WFO identifier of the accepted name.",
-  "circumference_from_dbh", "no",       "yes where the stem circumference was calculated from the recorded DBH (DBH x pi).",
   "qaqc_flags",             "no",       "Checks that flagged this record; the values concerned are kept or were left empty."
 )
 
@@ -637,7 +638,7 @@ rule_table <- bind_rows(
              paste(names(controlled_vocabularies), "is one of:",
                    map_chr(controlled_vocabularies, paste, collapse = ", ")),
              "names as captured and standardised by step 1 (one consistent spelling per person)",
-             "name shown where the answer is yes; replaced where the answer is no",
+             "name shown only where the answer is yes; replaced where the answer is no, unknown or blank",
              "numbers within -90 to 90 and -180 to 180, complete pairs, not 0, 0",
              paste("fewer than", minimum_recorded_decimal_places, "decimal places as recorded:", if (remove_imprecise_positions) "record removed" else "flagged", "; all coordinates written to",
                    coordinate_decimal_places, "decimal places"),
@@ -658,13 +659,14 @@ rule_table <- bind_rows(
          Action = "stem, height or crown error: record removed; other errors: value left empty; warning: value kept and flagged"),
   tibble(
     Check = c("Multiple stems", "Elephant damage", "Species name", "Sensitive species",
-              "Duplicates", "Personal data", "Required coordinates", "Stem measurement",
+              "Duplicates", "Tree identifier", "Personal data", "Required coordinates", "Stem measurement",
               "Withheld columns", "Observation date"),
     Rule = c("a single-stem tree has no second circumference; a multi-stem tree has one",
              paste("no elephant damage reported in", paste(countries_without_elephants, collapse = ", ")),
              "matched exactly to the World Flora Online backbone after listed corrections; genus-only names have no accepted species name",
              paste("identity withheld for:", paste(sensitive_species, collapse = ", ")),
              "exact duplicate records; different trees at one position in one file; the same tree twice on one date; the same position, date and tree type in different files",
+             "a contributor's tree identifier is used in one source file only",
              "email addresses removed from the file and from all text",
              "latitude and longitude both present",
              paste("a value for at least one of:", paste(stem_measurement_variables, collapse = ", ")),
@@ -675,6 +677,7 @@ rule_table <- bind_rows(
                       "fuzzy matches and unmatched names listed for correction",
                       "species names left empty",
                       "one record kept (the most complete; the earlier if equal), others removed",
+                      "published as recorded; identifiers found in several files flagged for review",
                       "column removed; addresses replaced",
                       "record removed from the public file",
                       "record removed from the public file",
@@ -920,10 +923,12 @@ visibility_answers <- if (!is.na(public_access_variable)) {
 }
 named_records <- if (!is.na(observer_name_variable)) is_filled(working_data[[observer_name_variable]]) else
   rep(FALSE, number_of_records)
-names_withheld <- withhold_names_answered_no & visibility_answers == "no"
+# A name is shown only where the observer answered "yes"; "no", "unknown" and
+# a blank answer all show "Anonymous".
+names_withheld <- withhold_names_answered_no & visibility_answers != "yes"
 ```
 
-Of the `r format(sum(named_records), big.mark = ",")` records that name a contributor, `r format(sum(named_records & visibility_answers == "no"), big.mark = ",")` carry the answer "no" to the question on whether the name may be shown publicly. `r if (withhold_names_answered_no) paste0("In the public file, observer_name shows the name where the answer is \"yes\", and \"", anonymous_label, "\" for every record whose answer is \"no\" (", format(sum(names_withheld), big.mark = ","), " records); the records themselves are kept.") else "These names are published, because withhold_names_answered_no is FALSE."`
+Of the `r format(sum(named_records), big.mark = ",")` records that name a contributor, `r format(sum(named_records & visibility_answers == "yes"), big.mark = ",")` carry the answer "yes" to the question on whether the name may be shown publicly. `r if (withhold_names_answered_no) paste0("In the public file, observer_name shows the name only where the answer is \"yes\", and \"", anonymous_label, "\" for every record whose answer is \"no\", \"unknown\" or blank (", format(sum(named_records & names_withheld), big.mark = ","), " records that name a contributor); the records themselves are kept.") else "These names are published, because withhold_names_answered_no is FALSE."`
 
 # Step 4: Coordinates
 
@@ -1044,21 +1049,13 @@ show_step_results("study region", "Study region checks.")
 
 # Step 6: Measurements
 
-Where a tree has a diameter at breast height (DBH) but no circumference, the circumference is calculated as DBH × π and marked in `circumference_from_dbh` (used internally; not published); the recorded DBH is kept. Elevations, crown diameters, stem circumferences, DBH and tree heights are then checked against the limits in @tbl-measurement-rules. A record whose stem circumference, DBH, height or crown diameter breaks an error limit is removed from the public file; an elevation that breaks an error limit is left empty, and values above a warning limit are kept and flagged. Elevations are then rounded to the nearest metre: handheld GPS receivers do not measure elevation more precisely, and the extra decimal places recorded by some devices are spurious.
+Stem circumference and diameter at breast height (DBH) are published as recorded: neither is calculated from the other, so a tree measured only by DBH has no circumference in the public file. Elevations, crown diameters, stem circumferences, DBH and tree heights are then checked against the limits in @tbl-measurement-rules. A record whose stem circumference, DBH, height or crown diameter breaks an error limit is removed from the public file; an elevation that breaks an error limit is left empty, and values above a warning limit are kept and flagged. Elevations are then rounded to the nearest metre: handheld GPS receivers do not measure elevation more precisely, and the extra decimal places recorded by some devices are spurious.
 
 ```{r}
 #| label: measurement-checks
 
-working_data$circumference_from_dbh <- NA_character_
-for (pair in list(c(circumference_variable, dbh_variable), c(stem_two_variable, dbh_two_variable))) {
-  if (any(is.na(pair))) next
-  derive <- !is_filled(working_data[[pair[1]]]) & is.finite(as_number(working_data[[pair[2]]]))
-  working_data[[pair[1]]][derive] <- format(round(as_number(working_data[[pair[2]]][derive]) * pi, 1), nsmall = 1, trim = TRUE)
-  working_data$circumference_from_dbh[derive] <- "yes"
-  record_issues("measurements", which(derive), pair[1], working_data[[pair[2]]][derive],
-                "circumference not recorded; calculated from DBH x pi", "note", "circumference added")
-}
-
+# Circumference and DBH are kept as recorded; neither is calculated from the
+# other.
 variables_removing_record <- dictionary$variable_name[dictionary$role %in% roles_removing_record]
 implausible_measurement <- rep(FALSE, number_of_records)
 for (rule_index in seq_len(nrow(numeric_rules))) {
@@ -1323,6 +1320,10 @@ if (wfo_backbone_available) {
       TRUE               ~ paste("matched at", taxon_rank, "level only")), name = "records") %>%
     arrange(desc(records))
 }
+
+# Baobab records are A. digitata by tree type.
+is_baobab <- working_data[[tree_type_variable]] %in% "baobab"
+working_data$accepted_species_name[is_baobab] <- "Adansonia digitata"
 
 is_sensitive <- function(names) tolower(coalesce(names, "")) %in% tolower(sensitive_species)
 sensitive_record <- is_sensitive(recorded_species) | is_sensitive(name_for_matching) |
@@ -1589,7 +1590,7 @@ if (nrow(comment_spelling_review) > 0) {
 
 # Public data file
 
-The public file, `r input_paths$public_file_name`, is saved in its own folder (`public_data`). It contains the dictionary variables in dictionary order, except those withheld (`r paste(dictionary$variable_name[dictionary$withheld & dictionary$kind != "email"], collapse = ", ")` and the email address), followed by the published derived variables in @tbl-derived`r if (publish_source_columns) " and the source columns" else ""`. `r if (!publish_source_columns) "The source columns, which record the file, sheet and row of each record, are not published; they remain in the internal reports." else ""` Email addresses are removed: the email variable is withheld, and any email address written inside another value (for example, a comment) is replaced by "\[email address removed\]". Observer names are published only as names from the contributor list (Step 2) and only where the observer answered "yes" to the visibility question; where the answer is "no", observer_name shows "`r anonymous_label`" (Step 3). The identity of sensitive species is withheld (Step 9). Only records `r if (include_african_islands) "in Africa" else "on mainland Africa"` are included (Step 5). Where the same tree was recorded more than once on one date, different trees share one position in one file, or records in different files share position, date and tree type, only the most complete record is kept (Step 10); duplicates are screened only among records that passed the coordinate, study-region and measurement checks, so the copy kept is never one removed for another reason. Each record carries its data collection method (`data_collection_method`), the name of the raw-input folder that holds its source file. A record is removed if its latitude or longitude is missing, or if all of `r paste(stem_measurement_variables, collapse = ", ")` are blank (a record with at least one stem measurement is kept). Observation dates are written as ISO 8601 dates without a time: `YYYY-MM-DD`, or `YYYY-MM` and `YYYY` where the day or month was not recorded. Every empty value is written as NA.
+The public file, `r input_paths$public_file_name`, is saved in its own folder (`public_data`). It contains the dictionary variables in dictionary order, except those withheld (`r paste(dictionary$variable_name[dictionary$withheld & dictionary$kind != "email"], collapse = ", ")` and the email address), followed by the published derived variables in @tbl-derived`r if (publish_source_columns) " and the source columns" else ""`. `r if (!publish_source_columns) "The source columns, which record the file, sheet and row of each record, are not published; they remain in the internal reports." else ""` Email addresses are removed: the email variable is withheld, and any email address written inside another value (for example, a comment) is replaced by "\[email address removed\]". Observer names are published only as names from the contributor list (Step 2) and only where the observer answered "yes" to the visibility question; where the answer is "no", "unknown" or blank, observer_name shows "`r anonymous_label`" (Step 3). The identity of sensitive species is withheld (Step 9). Only records `r if (include_african_islands) "in Africa" else "on mainland Africa"` are included (Step 5). Where the same tree was recorded more than once on one date, different trees share one position in one file, or records in different files share position, date and tree type, only the most complete record is kept (Step 10); duplicates are screened only among records that passed the coordinate, study-region and measurement checks, so the copy kept is never one removed for another reason. Each record carries its data collection method (`data_collection_method`), the name of the raw-input folder that holds its source file. A record is removed if its latitude or longitude is missing, or if all of `r paste(stem_measurement_variables, collapse = ", ")` are blank (a record with at least one stem measurement is kept). Observation dates are written as ISO 8601 dates without a time: `YYYY-MM-DD`, or `YYYY-MM` and `YYYY` where the day or month was not recorded. Every empty value is written as NA.
 
 ```{r}
 #| label: tbl-derived
@@ -1605,6 +1606,28 @@ knitr::kable(rename(derived_variables, Variable = variable_name, Published = in_
 # Records kept: those that passed every check and were not removed as
 # duplicates (Step 10).
 keep_record <- passed_checks & !duplicate_record & !repeated_record
+
+# Tree identifiers are given by contributors, so the same identifier (such as
+# "1" or "T1") may be used in two files for different trees. Such identifiers
+# are flagged, because users would read them as repeat visits to one tree.
+shared_tree_identifiers <- character()
+if (!is.na(tree_identity_variable)) {
+  tree_identifiers <- working_data[[tree_identity_variable]]
+  shared_tree_identifiers <- tibble(tree = tree_identifiers, source_file = working_data$source_file) %>%
+    filter(keep_record, is_filled(tree)) %>%
+    distinct(tree, source_file) %>%
+    count(tree, name = "files") %>%
+    filter(files > 1) %>%
+    pull(tree)
+  in_several_files <- keep_record & tree_identifiers %in% shared_tree_identifiers
+  record_issues("public file", which(in_several_files), tree_identity_variable, tree_identifiers[in_several_files],
+                "tree identifier used in more than one source file", "warning",
+                "kept; identifier does not link these records to one tree")
+  if (length(shared_tree_identifiers) > 0) {
+    print_to_console("\nTree identifiers used in more than one source file: ", length(shared_tree_identifiers),
+                     " (", sum(in_several_files), " public records); see qaqc_issues.csv")
+  }
+}
 
 if (!is.na(observer_name_variable)) working_data[[observer_name_variable]][names_withheld] <- anonymous_label
 
@@ -1732,6 +1755,9 @@ confirm(!any(str_starts(names(public_dataset), fixed(source_column_prefix))) || 
 # No e-mail address appears anywhere.
 confirm(!any(map_lgl(public_dataset, ~ any(str_detect(.x, email_address_pattern), na.rm = TRUE))),
         "an email address is still present.")
+# The tree identifier is published so that repeat observations can be linked.
+confirm(is.na(tree_identity_variable) || tree_identity_variable %in% names(public_dataset),
+        "the tree identifier is missing from the public file; set in_public to yes for it in the dictionary.")
 confirm(all(follows_dictionary_style(names(public_dataset))),
         "a column name does not follow the dictionary format.")
 confirm(identical(intersect(names(public_dataset), dictionary$variable_name), public_variables),
@@ -1764,13 +1790,12 @@ for (role_name in names(decimal_places_by_role)) {
   confirm(all(count_decimal_places(na.omit(public_dataset[[variable]])) <= decimal_places_by_role[[role_name]]),
           paste(variable, "has more decimal places than set in decimal_places_by_role."))
 }
-# Every observer who declined is shown as "Anonymous".
-if (!is.na(observer_name_variable) && !is.na(public_access_variable)) {
-  if (withhold_names_answered_no) {
-    answered_no <- str_to_lower(working_data[[public_access_variable]][public_record_numbers]) %in% "no"
-    confirm(all(public_dataset[[observer_name_variable]][answered_no] %in% anonymous_label),
-            "a name is published although the observer answered no.")
-  }
+# Every observer who did not answer "yes" is shown as "Anonymous".
+if (!is.na(observer_name_variable) && withhold_names_answered_no) {
+  not_yes <- visibility_answers[public_record_numbers] != "yes"
+  confirm(all(public_dataset[[observer_name_variable]][not_yes & is_filled(public_dataset[[observer_name_variable]])] %in%
+                anonymous_label),
+          "a name is published although the observer did not answer yes.")
 }
 ```
 
@@ -1910,7 +1935,7 @@ records_by_file <- kept_records %>%
 # Flags, taxonomy and provenance are saved for internal review, linked by
 # record_id.
 record_flags_internal <- kept_records %>%
-  select(record_id, any_of(c(tree_identity_variable, "qaqc_flags", "circumference_from_dbh",
+  select(record_id, any_of(c(tree_identity_variable, "qaqc_flags",
                              "accepted_species_name", "taxonomic_status", "family", "wfo_taxon_id")),
          all_of(source_columns))
 
@@ -1966,7 +1991,8 @@ record_numbers <- seq_len(number_of_records)
 after_compilation <- !empty_record
 after_coordinates <- after_compilation & !removed_coordinates
 after_boundary    <- after_coordinates & !removed_outside
-after_measurement <- after_boundary & !removed_measurement
+after_plausible   <- after_boundary & !removed_implausible
+after_measurement <- after_plausible & !no_stem_measurement
 after_duplicates  <- keep_record
 confirm(sum(after_duplicates) == nrow(public_dataset), "the data quality table does not match the public file.")
 
@@ -1978,17 +2004,20 @@ flagged_taxonomy    <- after_duplicates & is_filled(recorded_species) & !is_fill
 
 data_quality <- tibble(
   `Validation stage` = c("Initial data compilation", "Coordinate completeness and precision",
-                         "Geographic boundary checks", "Measurement plausibility", "Duplicate screening",
-                         "Taxonomic harmonisation", "Final public dataset"),
+                         "Geographic boundary checks", "Measurement plausibility", "Stem measurement present",
+                         "Duplicate screening", "Taxonomic harmonisation", "Final public dataset"),
   `Records before` = c(records_read, sum(after_compilation), sum(after_coordinates), sum(after_boundary),
-                       sum(after_measurement), sum(after_duplicates), nrow(public_dataset)),
+                       sum(after_plausible), sum(after_measurement), sum(after_duplicates), nrow(public_dataset)),
   Removed = c(records_read - sum(after_compilation), sum(removed_coordinates), sum(removed_outside),
-              sum(removed_measurement), sum(after_measurement & !after_duplicates), 0, NA),
-  `Flagged (retained)` = c(NA, sum(flagged_coordinates), sum(flagged_boundary), sum(flagged_measurement), 0,
+              sum(removed_implausible), sum(no_stem_measurement),
+              sum(after_measurement & !after_duplicates), 0, NA),
+  `Flagged (retained)` = c(NA, sum(flagged_coordinates), sum(flagged_boundary), sum(flagged_measurement), 0, 0,
                            sum(flagged_taxonomy), NA),
   `Records after` = c(sum(after_compilation), sum(after_coordinates), sum(after_boundary),
-                      sum(after_measurement), sum(after_duplicates), sum(after_duplicates), nrow(public_dataset))
+                      sum(after_plausible), sum(after_measurement), sum(after_duplicates),
+                      sum(after_duplicates), nrow(public_dataset))
 )
+
 data_quality_text <- data_quality %>%
   mutate(across(-`Validation stage`, ~ ifelse(is.na(.x), "\u2014", format(.x, big.mark = ",", trim = TRUE))))
 
@@ -2001,16 +2030,17 @@ data_quality_footnote <- paste0(
   "valid coordinate pair, or recorded with fewer than ", minimum_recorded_decimal_places, " decimal places. ",
   "Geographic boundary checks: records more than ", coastal_tolerance_km, " km from mainland Africa were removed; ",
   "positions at sea within ", coastal_tolerance_km, " km of the coast were assigned the nearest country and flagged. ",
-  "Measurement plausibility: stem, height or crown values beyond error limits, or no stem measurement, removed; ",
+  "Measurement plausibility: records with a stem, height or crown value beyond error limits removed; ",
   "values above warning limits, stem-count conflicts and elephant damage reported where no wild elephants occur, ",
-  "flagged. Duplicate screening: exact duplicates, repeated visits on one date, different trees at one position ",
+  "flagged. Stem measurement present: records without any stem circumference or DBH removed. ",
+  "Duplicate screening: exact duplicates, repeated visits on one date, different trees at one position ",
   "in one file, and the same position, date and tree type in different files; the most complete record was kept. ",
   "Taxonomic harmonisation: records whose recorded species name had no exact species-level match in World Flora ",
   "Online, including sensitive species whose identity is withheld; no records are removed.")
 
 # The table is saved as an editable Word document in the style of Scientific
 # Data.
-save_word_table(data_quality_text, 1, "Quantitative evidence of data quality and processing outcomes.",
+save_word_table(data_quality_text, 3, "Records removed and flagged at each processing stage.",
                 data_quality_footnote, column_widths = c(2.4, 0.95, 0.95, 0.95, 0.95),
                 right_aligned_columns = 2:5,
                 path = file.path(input_paths$results_folder, "table_data_quality.docx"))
@@ -2085,7 +2115,7 @@ The following files were written to the results folder:
 -   **public_data/`r input_paths$public_file_name`**: the public dataset (`r format(nrow(public_dataset), big.mark = ",")` records, `r ncol(public_dataset)` columns).
 -   **manuscript_numbers.csv** and **manuscript_table_records_by_file.csv**: every number and table quoted in the Data Descriptor, computed from the public file.
 -   **qaqc_issues.csv**: every issue found, with the original value and the action taken (internal use only; it may contain personal data).
--   **qaqc_record_flags.csv**: for each public record (by `record_id`), the QA/QC flags, the WFO taxonomy (of which only `accepted_species_name` is published), whether the circumference was calculated from DBH, and the source columns (internal use only).
+-   **qaqc_record_flags.csv**: for each public record (by `record_id`), the QA/QC flags, the WFO taxonomy (of which only `accepted_species_name` is published) and the source columns (internal use only).
 -   **qaqc_variable_summary.csv** and **table_variable_summary.docx**: the description, unit and completeness of each public variable (@tbl-completeness), the second as an editable Word table.
 -   **qaqc_corrections_applied.csv**: every value changed by a correction rule (observer names, comments, rounding of elevation), with the original and corrected values, the rule applied and the `record_id` (internal use only).
 -   **comment_spelling_review.csv**: words in comments not recognised by the spelling checker, with suggested corrections, for review (internal use only).

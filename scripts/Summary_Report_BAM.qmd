@@ -458,3 +458,195 @@ ggsave(file.path(figures_folder, "webpage_map.png"), map_for_webpage,
        width = webpage_map_size_mm, height = webpage_map_size_mm, units = "mm",
        dpi = figure_resolution_dpi, bg = "transparent", device = ragg::agg_png)
 ```
+
+```{r}
+#| label: environment-data
+
+# Reads the outputs of Environmental_covariates.R so that the figure and the
+# numbers quoted beside it come from the same run.
+
+# PDF keeps the figure as vector graphics in the PDF report; PNG is used for
+# Word or HTML output.
+environment_figure_extension <- if (knitr::is_latex_output()) "pdf" else "png"
+
+# File names written by Environmental_covariates.R (Section 11 and Section 12).
+environment_figure_file <- file.path(figures_folder,
+                                     paste0("figure_3_environment.", environment_figure_extension))
+covariates_file <- file.path(environment_results_folder, "baobab_environmental_covariates.csv")
+
+# The report stops with a clear message if step 5 has not been run.
+for (needed_file in c(covariates_file, environment_figure_file)) {
+  if (!file.exists(needed_file)) {
+    stop(basename(needed_file), " was not found. Run Environmental_covariates.R ",
+         "before rendering this report.", call. = FALSE)
+  }
+}
+
+# Covariates older than the public file were extracted from an earlier
+# version of the data.
+if (file.mtime(covariates_file) < file.mtime(public_data_file)) {
+  warning("The environmental covariates are older than the public data file; ",
+          "run Environmental_covariates.R again.", call. = FALSE)
+}
+
+# One row per unique baobab location.
+covariates <- read_csv(covariates_file, show_col_types = FALSE, progress = FALSE)
+
+number_of_locations <- nrow(covariates)
+semi_arid_share     <- round(100 * mean(covariates$aridity_class == "Semi-arid", na.rm = TRUE))
+protected_share     <- round(100 * mean(covariates$in_protected_area, na.rm = TRUE))
+
+# The aridity index has no unit, so it is written without one.
+aridity_quartiles <- quantile(covariates$aridity_index, c(0.25, 0.5, 0.75), na.rm = TRUE)
+aridity_text <- sprintf("%.2f (IQR %.2f–%.2f)", aridity_quartiles[2], aridity_quartiles[1],
+                        aridity_quartiles[3])
+```
+
+# Environment of the baobab locations
+
+@fig-environment describes the environment at the `r format_count(number_of_locations)` unique baobab locations. Mean annual precipitation has a median of `r describe_distribution(covariates$precipitation_mm, "mm", 0)` and mean annual temperature a median of `r describe_distribution(covariates$temperature_c, "°C")`. The median aridity index is `r aridity_text`, and `r semi_arid_share`% of locations fall in the semi-arid class. `r protected_share`% of locations lie inside a protected area.
+
+```{r}
+#| label: fig-environment
+#| fig-cap: !expr paste0("Environmental conditions at the unique baobab locations in the BAM public dataset (n = ", format_count(number_of_locations), "). **a**, Mean annual precipitation; **b**, mean annual air temperature; **c**, aridity index; **d**, slope; **e**, locations inside protected areas, overall and for countries with at least 50 locations; **f**, topsoil (0–20 cm) sand, silt and clay content.")
+#| out-width: "100%"
+#| fig-pos: "htbp"
+
+knitr::include_graphics(environment_figure_file)
+```
+
+# Completeness of the variables
+
+```{r}
+#| label: completeness-data
+
+# Reads the completeness of each public variable, written by QAQC_BAM_Data.qmd
+# (step 3), so that the figure always matches Table 1 of the manuscript.
+variable_summary_file <- file.path(qaqc_results_folder, "qaqc_variable_summary.csv")
+if (!file.exists(variable_summary_file)) {
+  stop("qaqc_variable_summary.csv was not found. Render QAQC_BAM_Data.qmd before this report.",
+       call. = FALSE)
+}
+
+completeness_bar_colour       <- "grey60"
+completeness_figure_width_mm  <- 120   # Nature Portfolio 1.5-column width
+completeness_figure_height_mm <- 130
+well_recorded_percent         <- 75    # threshold quoted in the text
+
+# One row per variable in the public file, named exactly as in the file.
+completeness <- read_csv(variable_summary_file, col_types = cols(.default = col_character()),
+                         progress = FALSE) %>%
+  transmute(variable_name, percent_complete = as.numeric(percent_complete))
+
+# format_percent() writes a percentage as a whole number, but never rounds a
+# variable with a few values down to 0% or a nearly complete one up to 100%.
+format_percent <- function(percent) {
+  case_when(percent > 0 & percent < 1    ~ "<1%",
+            percent > 99 & percent < 100 ~ ">99%",
+            TRUE                         ~ paste0(round(percent), "%"))
+}
+
+number_well_recorded <- sum(completeness$percent_complete >= well_recorded_percent)
+empty_variables      <- completeness$variable_name[completeness$percent_complete == 0]
+```
+
+@fig-completeness shows the percentage of the `r format_count(number_of_records)` public records that hold a value for each of the `r nrow(completeness)` variables in the public file. `r number_well_recorded` variables are recorded for at least `r well_recorded_percent`% of records.`r if (length(empty_variables) > 0) paste0(" ", paste0("\x60", empty_variables, "\x60", collapse = ", "), if (length(empty_variables) == 1) " has" else " have", " no values.") else ""`
+
+```{r}
+#| label: fig-completeness
+#| fig-cap: !expr 'paste0("Completeness of the variables in the BAM public dataset, as the percentage of the ", format_count(number_of_records), " records with a value for each variable. Variables are named as in the public file and ordered from most to least complete.")'
+#| fig-width: 4.724
+#| fig-height: 5.118
+#| fig-align: "center"
+#| fig-pos: "htbp"
+
+figure_completeness <- ggplot(completeness,
+                              aes(x = percent_complete, y = fct_reorder(variable_name, percent_complete))) +
+  geom_col(width = 0.75, fill = completeness_bar_colour) +
+  # Percentages are written just beyond the end of each bar.
+  geom_text(aes(label = format_percent(percent_complete)), hjust = -0.15,
+            size = small_text_size_pt / ggplot2::.pt, family = figure_font, colour = "black") +
+  # The axis runs from 0% to 100%; bars start at zero.
+  scale_x_continuous(limits = c(0, 100), breaks = seq(0, 100, by = 25),
+                     labels = function(x) paste0(x, "%"), expand = expansion(mult = c(0, 0))) +
+  # Labels of bars near 100% may extend past the panel, so they are not clipped.
+  coord_cartesian(clip = "off") +
+  labs(x = "Records with a value", y = NULL) +
+  theme_publication() +
+  theme(plot.margin = margin(2, 8, 2, 2, unit = "mm"))
+
+save_journal_figure(figure_completeness, "figure_variable_completeness",
+                    width_mm = completeness_figure_width_mm, height_mm = completeness_figure_height_mm)
+figure_completeness
+```
+
+# Supplementary information
+
+```{r}
+#| label: try-data
+
+# Reads the outputs of TRY_comparison_check.R (step 2), so that the figure and
+# the numbers quoted beside it come from the same run.
+
+# PDF keeps the figure as vector graphics in the PDF report; PNG is used for
+# Word or HTML output.
+try_figure_extension <- if (knitr::is_latex_output()) "pdf" else "png"
+
+# File names written by TRY_comparison_check.R (Sections 9 and 10).
+try_figure_file    <- file.path(figures_folder,
+                                paste0("supplementary_figure_1_try_locations.", try_figure_extension))
+try_summary_file   <- file.path(try_results_folder, "try_cross_check_summary.csv")
+try_duplicate_file <- file.path(try_results_folder, "try_bam_duplicate_check.csv")
+
+# The report stops with a clear message if step 2 has not been run.
+for (needed_file in c(try_figure_file, try_summary_file, try_duplicate_file)) {
+  if (!file.exists(needed_file)) {
+    stop(basename(needed_file), " was not found. Run TRY_comparison_check.R ",
+         "before rendering this report.", call. = FALSE)
+  }
+}
+
+# A comparison older than the harmonised dataset was made with an earlier
+# version of the data.
+if (file.mtime(try_summary_file) < file.mtime(harmonised_dataset_file)) {
+  warning("The TRY comparison is older than the harmonised dataset; ",
+          "run TRY_comparison_check.R again.", call. = FALSE)
+}
+
+# One row per measure, with its value as text.
+try_summary <- read_csv(try_summary_file, col_types = cols(.default = col_character()),
+                        progress = FALSE)
+
+# try_value() returns the value of one measure in the summary table.
+try_value <- function(measure) {
+  value <- try_summary$value[try_summary$measure == measure]
+  if (length(value) == 0) NA_character_ else value[1]
+}
+
+try_observations       <- try_value("TRY Adansonia observations")
+try_with_coordinates   <- try_value("TRY Adansonia observations with coordinates")
+try_digitata_located   <- try_value("Adansonia digitata observations with coordinates")
+try_probable_duplicates <- try_value("Probable duplicates of BAM records")
+
+# Distance from each georeferenced A. digitata observation in TRY to the
+# nearest BAM baobab, in kilometres.
+try_digitata_distances_km <- read_csv(try_duplicate_file, col_types = cols(.default = col_character()),
+                                      progress = FALSE) %>%
+  filter(str_detect(coalesce(species, ""), fixed("Adansonia digitata")),
+         !is.na(nearest_bam_distance_m)) %>%
+  mutate(distance_km = round(as.numeric(nearest_bam_distance_m) / 1000)) %>%
+  arrange(distance_km) %>%
+  pull(distance_km)
+```
+
+Supplementary Figure 1 compares the baobab records in the harmonised BAM dataset with the observations of the genus *Adansonia* in the TRY Plant Trait Database. The TRY release held `r try_observations` *Adansonia* observations, of which `r try_with_coordinates` had coordinates, including `r try_digitata_located` of *A. digitata*. ``` r if (length(try_digitata_distances_km) > 0) paste0("The nearest BAM baobabs lay ", paste(format_count(try_digitata_distances_km), collapse = " and "), " km from the georeferenced *A. digitata* observations. ") else ""``r try_probable_duplicates ``` TRY observations were classified as probable duplicates of BAM records.
+
+```{r}
+#| label: supplementary-figure-1
+#| fig-cap: "Supplementary Figure 1. Locations of BAM baobab records and of *Adansonia* observations in the TRY Plant Trait Database. Small red points are baobab records in the harmonised BAM dataset. Larger points are TRY *Adansonia* observations with coordinates, coloured by the result of the duplicate check: probable duplicate (within 50 m of a BAM baobab and matching it in height or contributor), possible duplicate, same site as BAM records but a different tree, or not in BAM. n gives the number of observations in each class; TRY observations outside Africa are not shown."
+#| out-width: "70%"
+#| fig-align: "center"
+#| fig-pos: "htbp"
+
+knitr::include_graphics(try_figure_file)
+```
