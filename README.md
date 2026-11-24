@@ -24,11 +24,11 @@ The Baobab in Africa Mapped (BAM) project aims to create an open-source, communi
 
 | Script | Description |
 |---------|-------------|
-| *Harmonise_tree_data.R* | Reads individual contributor files and harmonises their column names and variables against the BAM variable dictionary. |
-| *TRY_comparison_check.R* | Identifies potential duplicate records by cross-referencing all *Adansonia* observations in the TRY database (Version 7) against the harmonised BAM baobab records. |
-| *QAQC_BAM_Data.qmd* | Performs quality checks including validation, exclusion, correction, privacy and publication rules; generates the public dataset. |
-| *Environmental_covariates.R* | Extracts environmental covariates for every baobab location, including climate, soil, topography, and protected-area status. |
-| *Summary_report_BAM.qmd* | Generates summary statistics, spatial distribution maps, and visualisations to provide an overview of the BAM datase. |
+| *1_Harmonise_tree_data.R* | Reads individual contributor files and harmonises their column names and variables against the BAM variable dictionary. |
+| *2_QAQC_BAM_Data.qmd* | Performs quality checks including validation, exclusion, correction, privacy and publication rules; generates the public dataset. |
+| *3_TRY_comparison_check.R* | Identifies potential duplicate records by cross-referencing all *Adansonia* observations in the TRY database (Version 7) against the harmonised BAM baobab records. |
+| *4_Environmental_covariates.R* | Extracts environmental covariates for every baobab location, including climate, soil, topography, and protected-area status. |
+| *5_Summary_report_BAM.qmd* | Generates summary statistics, spatial distribution maps, and visualisations to provide an overview of the BAM datase. |
 
 
 ### Data
@@ -38,6 +38,7 @@ The Baobab in Africa Mapped (BAM) project aims to create an open-source, communi
 | *BAM_data_for_public.csv* | Cleaned dataset for public release. |
 | *BAM_variable_dictionary.csv* | Defines each variable, its unit or permitted values and its quality-control limits. |
 | *baobab_environmental_covariates.csv* | Contains environmental covariates for each unique baobab location. |
+| *photographs_for_public* | Contains phographs for baobabs and non-baobab trees. |
 | *crowdsourced_data_collection_protocols* | Data collection guidelines for the crowdsource campaigns. |
 
 ---
@@ -62,8 +63,8 @@ renv::restore()
 Scripts should be run in numerical order:
 
 1. *Harmonise_tree_data.R* 
-2. *TRY_comparison_check.R*
-3. *QAQC_BAM_Data.qmd*
+4. *QAQC_BAM_Data.qmd*
+3. *TRY_comparison_check.R*
 4. *Environmental_covariates.R*
 5. *Summary_report_BAM.qmd*
 
