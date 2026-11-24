@@ -45,7 +45,7 @@ The Baobab in Africa Mapped (BAM) project aims to create an open-source, communi
 
 ## Acknowledgements
 
-We gratefully acknowledge financial support from Few and Far Collection within the Oppenheimer Programme in African Landscape Systems (OPALS) (https://opals-exeter.org/), which made this research possible. We sincerely thank landowners at Kremetart, Bahiti, ZZ2, Francois Pauer, South African National Parks (SANParks) and all their neighbours for granting permission to conduct fieldwork on their properties. 
+We gratefully acknowledge financial support from Few and Far Collection within the Oppenheimer Programme in African Landscape Systems (OPALS) (https://opals-exeter.org/), which made this research possible. We sincerely thank landowners at Kremetart, Bahiti Nature Reserve, ZZ2, Francois Pauer, South African National Parks (SANParks) and all their neighbours for granting permission to conduct fieldwork on their properties. 
 
 ## Getting started
 
