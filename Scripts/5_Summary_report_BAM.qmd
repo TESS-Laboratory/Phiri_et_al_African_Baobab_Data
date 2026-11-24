@@ -1,0 +1,778 @@
+---
+title: "Baobabs in Africa Mapped (BAM): summary of the public tree dataset"
+author: "Chafika Phiri"
+date: today
+date-format: "D MMMM YYYY"
+format:
+  pdf:
+    pdf-engine: xelatex
+    number-sections: true
+    colorlinks: true
+    papersize: a4
+    geometry: margin=1.5cm
+fig-cap-location: bottom
+tbl-cap-location: top
+execute:
+  echo: false
+  warning: false
+  message: false
+knitr:
+  opts_chunk:
+    # cairo_pdf embeds system fonts such as Arial; the default pdf device cannot.
+    dev: cairo_pdf
+editor: visual
+params:
+  # Paths come from pipeline_paths.csv; a value given here overrides it.
+  public_data_file: ""
+  figures_folder: ""
+---
+
+```{r}
+#| label: setup
+
+# 5_Summary_report_BAM.qmd
+#
+# Baobabs in Africa Mapped (BAM), step 5 of 5. Reports the numbers quoted in
+# the Data Overview and draws Figure 2 of the manuscript (map, tree sizes and
+# the most frequent non-baobab species) to the Nature Portfolio figure
+# specifications used by Scientific Data, plus a map for the project web page.
+# Figure 3 is drawn by 4_Environmental_covariates.R and shown here. Every
+# number is written to manuscript_overview_numbers.csv, and the document stops
+# if any of its inputs comes from an earlier run than the public data file.
+
+
+# Packages
+
+required_packages <- c("readr", "dplyr", "tidyr", "stringr", "forcats", "ggplot2",
+                       "patchwork", "scales", "sf", "rnaturalearth",
+                       "rnaturalearthdata", "knitr", "ragg", "systemfonts")
+missing_packages <- required_packages[!vapply(required_packages, requireNamespace,
+                                              logical(1), quietly = TRUE)]
+if (length(missing_packages) > 0) {
+  stop("Please install these packages first: ", paste(missing_packages, collapse = ", "),
+       call. = FALSE)
+}
+
+# scales is loaded before readr, so that readr's col_factor() takes precedence
+# over the scales function of the same name.
+suppressPackageStartupMessages({
+  library(scales)             # axis labels
+  library(knitr)              # tables and figures in this report
+  library(ragg)               # PNG output
+  library(systemfonts)        # finding Arial or Helvetica
+  library(rnaturalearth)      # country boundaries
+  library(rnaturalearthdata)  # data used by rnaturalearth
+  library(readr)              # reading CSV files
+  library(dplyr)              # table manipulation
+  library(tidyr)              # reshaping tables
+  library(stringr)            # text handling
+  library(forcats)            # ordering species in Figure 2e
+  library(ggplot2)            # figures
+  library(patchwork)          # combining the panels of Figure 2
+  library(sf)                 # maps
+})
+
+# Figure settings (Nature Portfolio guide): widths of 89 or 183 mm, height of
+# at most 170 mm, Arial or Helvetica text of 5-7 pt, 8 pt bold panel labels,
+# lines of 0.25-1 pt.
+
+double_column_mm      <- 183
+maximum_height_mm     <- 170
+figure_2_height_mm    <- 170
+webpage_map_size_mm   <- 210
+figure_resolution_dpi <- 600
+text_size_pt          <- 7
+small_text_size_pt    <- 6
+panel_label_size_pt   <- 8
+thin_line_pt          <- 0.25
+standard_line_pt      <- 0.5
+line_width <- function(points) points / (ggplot2::.pt * 72 / 96)  # points to ggplot2 linewidth
+choose_figure_font <- function() {
+  preferred_fonts <- c("Arial", "Helvetica", "Liberation Sans", "Arimo")
+  installed_fonts <- unique(systemfonts::system_fonts()$family)
+  available <- intersect(preferred_fonts, installed_fonts)
+  if (length(available) == 0) {
+    warning("Neither Arial nor Helvetica is installed; the default sans-serif font is used.",
+            call. = FALSE)
+    return("sans")
+  }
+  available[1]
+}
+figure_font <- choose_figure_font()
+
+# Blue and orange remain distinct under common colour-vision deficiencies.
+tree_type_colours <- c("baobab" = "#2a78d6", "non-baobab" = "#eb6834", "not recorded" = "#8c8c8c")
+tree_type_labels  <- c("baobab" = "Baobab", "non-baobab" = "Non-baobab", "not recorded" = "Not recorded")
+
+# The map uses the Africa Albers equal-area conic projection, so that areas
+# are not distorted.
+map_projection <- "ESRI:102022"
+
+# Inset of Figure 2a: the densest cluster of records, unless a centre is given
+# here as c(longitude, latitude). The inset shows this many degrees either
+# side of its centre, and its extent is boxed on the main map.
+inset_centre_degrees     <- NULL
+inset_half_width_degrees <- 0.75
+
+# Line type of the two lines that join the box on the main map to the inset.
+inset_connector_linetype <- "dotted"
+
+number_of_species_shown <- 15
+
+# Source files of the project-team surveys at Kremetart and Mapungubwe, used
+# to report the share of non-baobab records they hold; leave empty to skip.
+project_team_survey_files <- c()
+```
+
+```{r}
+#| label: read-data
+
+# pipeline_paths.csv is written by step 1 in the folder of this document.
+if (!file.exists("pipeline_paths.csv")) {
+  stop("pipeline_paths.csv was not found next to this document. Run 1_Harmonise_tree_data.R first.",
+       call. = FALSE)
+}
+pipeline_paths <- read_csv("pipeline_paths.csv", col_types = cols(.default = col_character()),
+                           na = character(), progress = FALSE)
+
+# pipeline_value() returns one path from pipeline_paths.csv, where every path
+# of the pipeline is set by 1_Harmonise_tree_data.R.
+pipeline_value <- function(name) {
+  value <- pipeline_paths$value[pipeline_paths$name == name]
+  if (length(value) == 0) stop(name, " is missing from pipeline_paths.csv. Run 1_Harmonise_tree_data.R again.",
+                               call. = FALSE)
+  value[1]
+}
+
+# Input files and folders
+public_data_file           <- pipeline_value("public_data_file")            # written by 2_QAQC_BAM_Data.qmd
+dictionary_file            <- pipeline_value("dictionary_file")             # BAM_variable_dictionary.csv
+qaqc_results_folder        <- pipeline_value("qaqc_results_folder")         # record counts and completeness
+try_results_folder         <- pipeline_value("try_results_folder")          # 3_TRY_comparison_check.R
+environment_results_folder <- pipeline_value("environment_results_folder")  # 4_Environmental_covariates.R
+
+# Output folder: Figure 2, the web-page map and the overview numbers are
+# written here; Figure 3 is read from it.
+figures_folder <- pipeline_value("figures_folder")
+
+if (!identical(params$public_data_file, "")) public_data_file <- params$public_data_file
+if (!identical(params$figures_folder, ""))   figures_folder   <- params$figures_folder
+if (!file.exists(public_data_file)) {
+  stop("The public data file was not found: ", public_data_file,
+       ". Run 2_QAQC_BAM_Data.qmd first.", call. = FALSE)
+}
+
+# Variables are used by dictionary role, so they can be renamed in the
+# dictionary.
+dictionary <- read_csv(dictionary_file, col_types = cols(.default = col_character()), progress = FALSE)
+dictionary_roles <- dictionary[, c("variable_name", "role")]
+rename_to_roles <- function(table) {
+  hit <- names(table) %in% dictionary_roles$variable_name
+  names(table)[hit] <- dictionary_roles$role[match(names(table)[hit], dictionary_roles$variable_name)]
+  table
+}
+# The files used are printed in the R console (standard error stream, which
+# rendering does not hide).
+cat("\nFiles used by 5_Summary_report_BAM.qmd:",
+    "\n  public data file:     ", public_data_file,
+    "\n  dictionary:           ", dictionary_file,
+    "\n  QA/QC results:        ", qaqc_results_folder,
+    "\n  TRY results:          ", try_results_folder,
+    "\n  environment results:  ", environment_results_folder,
+    "\n  figures folder:       ", figures_folder, "\n", sep = "", file = stderr())
+
+# Every value is read as text so that nothing changes on reading.
+public_data_raw <- read_csv(public_data_file, col_types = cols(.default = col_character()),
+                            na = c("", "NA"), progress = FALSE)
+public_data <- rename_to_roles(public_data_raw)
+
+required_variables <- c("record_id", "tree_type", "latitude", "longitude", "country", "date",
+                        "observer_name", "circumference", "height", "crown_1", "crown_2",
+                        "accepted_species_name")
+missing_variables <- setdiff(required_variables, names(public_data))
+if (length(missing_variables) > 0) {
+  stop("These variables are missing from the public dataset: ",
+       paste(missing_variables, collapse = ", "), call. = FALSE)
+}
+
+# Every table read here must come from the same run as the public data file;
+# otherwise the figures and the numbers in the text would disagree.
+stop_if_stale <- function(condition, problem, remedy) {
+  if (isTRUE(condition)) stop(problem, " Run ", remedy, " again before rendering this report.", call. = FALSE)
+}
+manuscript_numbers_file <- file.path(qaqc_results_folder, "manuscript_numbers.csv")
+variable_summary_file   <- file.path(qaqc_results_folder, "qaqc_variable_summary.csv")
+for (needed_file in c(manuscript_numbers_file, variable_summary_file)) {
+  stop_if_stale(!file.exists(needed_file), paste(basename(needed_file), "was not found."), "2_QAQC_BAM_Data.qmd")
+}
+manuscript_numbers <- read_csv(manuscript_numbers_file, col_types = cols(.default = col_character()),
+                               progress = FALSE)
+qaqc_number <- function(quantity) manuscript_numbers$value[manuscript_numbers$quantity == quantity][1]
+stop_if_stale(!identical(as.integer(qaqc_number("Records in the public file")), nrow(public_data)),
+              "manuscript_numbers.csv does not match the public data file.", "2_QAQC_BAM_Data.qmd")
+variable_summary <- read_csv(variable_summary_file, col_types = cols(.default = col_character()),
+                             progress = FALSE)
+values_now <- vapply(variable_summary$variable_name, function(v)
+  if (v %in% names(public_data_raw)) sum(!is.na(public_data_raw[[v]])) else NA_integer_, integer(1))
+stop_if_stale(any(values_now != as.integer(variable_summary$values_in_public_file), na.rm = TRUE),
+              "qaqc_variable_summary.csv (Table 1) does not match the public data file.", "2_QAQC_BAM_Data.qmd")
+
+dir.create(figures_folder, recursive = TRUE, showWarnings = FALSE)
+
+# Circumference is converted to metres; canopy area is an ellipse from the two
+# perpendicular crown diameters.
+tree_data <- public_data %>%
+  transmute(
+    record_id,
+    tree_type        = factor(coalesce(tree_type, "not recorded"), levels = names(tree_type_colours)),
+    latitude         = as.numeric(latitude),
+    longitude        = as.numeric(longitude),
+    country,
+    year             = as.integer(str_sub(date, 1, 4)),
+    circumference_m  = as.numeric(circumference) / 100,
+    height_m         = as.numeric(height),
+    crown_1_m        = as.numeric(crown_1),
+    crown_2_m        = as.numeric(crown_2),
+    canopy_area_m2   = pi * (crown_1_m / 2) * (crown_2_m / 2),
+    has_photograph   = if ("photo" %in% names(public_data)) !is.na(photo) else NA,
+    accepted_species_name, observer_name
+  )
+
+typed_trees <- filter(tree_data, tree_type != "not recorded") %>% mutate(tree_type = droplevels(tree_type))
+```
+
+```{r}
+#| label: theme-and-helpers
+
+theme_publication <- function() {
+  theme_classic(base_size = text_size_pt, base_family = figure_font,
+                base_line_size = line_width(standard_line_pt),
+                base_rect_size = line_width(standard_line_pt)) +
+    theme(
+      text               = element_text(colour = "black"),
+      axis.title         = element_text(size = text_size_pt, colour = "black"),
+      axis.text          = element_text(size = small_text_size_pt, colour = "black"),
+      axis.line          = element_line(linewidth = line_width(standard_line_pt), colour = "black"),
+      axis.ticks         = element_line(linewidth = line_width(standard_line_pt), colour = "black"),
+      axis.ticks.length  = unit(1, "mm"),
+      panel.grid         = element_blank(),
+      legend.position    = "bottom",
+      legend.title       = element_text(size = text_size_pt, colour = "black"),
+      legend.text        = element_text(size = small_text_size_pt, colour = "black"),
+      legend.key.size    = unit(3, "mm"),
+      legend.margin      = margin(0, 0, 0, 0),
+      plot.tag           = element_text(size = panel_label_size_pt, face = "bold", colour = "black"),
+      plot.subtitle      = element_text(size = small_text_size_pt, colour = "black",
+                                        margin = margin(b = 1.5, unit = "mm")),
+      plot.margin        = margin(2, 3, 2, 2, unit = "mm"),
+      strip.background   = element_blank()
+    )
+}
+
+legend_tree_types <- c("baobab", "non-baobab")
+scale_tree_fill <- scale_fill_manual(values = tree_type_colours, labels = tree_type_labels[legend_tree_types],
+                                     breaks = legend_tree_types, name = "Tree type", drop = TRUE)
+
+sample_size_label <- function(data, variable) {
+  counts <- data %>% filter(!is.na(.data[[variable]])) %>% count(tree_type)
+  paste0("n = ", paste(format(counts$n, big.mark = ",", trim = TRUE),
+                       str_to_lower(tree_type_labels[as.character(counts$tree_type)]), collapse = "; "))
+}
+
+# quartiles_of() returns the median and the lower and upper quartiles.
+quartiles_of <- function(values) {
+  values <- values[!is.na(values)]
+  if (length(values) == 0) return(c(median = NA_real_, lower = NA_real_, upper = NA_real_))
+  q <- quantile(values, c(0.5, 0.25, 0.75), names = FALSE)
+  c(median = q[1], lower = q[2], upper = q[3])
+}
+
+describe_distribution <- function(values, unit, digits = 1) {
+  q <- quartiles_of(values)
+  sprintf(paste0("%.", digits, "f %s (IQR %.", digits, "f–%.", digits, "f %s)"),
+          q[["median"]], unit, q[["lower"]], q[["upper"]], unit)
+}
+
+save_journal_figure <- function(figure, file_stem, width_mm, height_mm) {
+  if (height_mm > maximum_height_mm) {
+    warning(file_stem, " is taller than ", maximum_height_mm, " mm.", call. = FALSE)
+  }
+  ggsave(file.path(figures_folder, paste0(file_stem, ".pdf")), figure,
+         width = width_mm, height = height_mm, units = "mm", bg = "white",
+         device = cairo_pdf)
+  ggsave(file.path(figures_folder, paste0(file_stem, ".png")), figure,
+         width = width_mm, height = height_mm, units = "mm", bg = "white",
+         dpi = figure_resolution_dpi, device = ragg::agg_png)
+}
+
+format_count <- function(x) format(x, big.mark = ",", trim = TRUE)
+
+# Every number quoted in the Data Overview is collected here and saved as
+# manuscript_overview_numbers.csv.
+overview_numbers <- tibble(quantity = character(), value = character())
+note_number <- function(quantity, value) {
+  overview_numbers <<- bind_rows(overview_numbers, tibble(quantity = quantity, value = as.character(value)))
+  invisible(value)
+}
+```
+
+```{r}
+#| label: summary-numbers
+
+number_of_records <- nrow(tree_data)
+number_of_baobabs <- sum(tree_data$tree_type == "baobab")
+number_of_others  <- sum(tree_data$tree_type == "non-baobab")
+number_untyped    <- sum(tree_data$tree_type == "not recorded")
+country_names     <- sort(unique(na.omit(tree_data$country)))
+number_of_datasets <- suppressWarnings(as.integer(qaqc_number("Source files")))
+
+# "Anonymous" is not a person and is not counted among named observers.
+named_observers <- tree_data$observer_name %>%
+  na.omit() %>%
+  str_split("\\s*;\\s*") %>%
+  unlist() %>%
+  str_squish() %>%
+  setdiff(c("", "Anonymous")) %>%
+  sort()
+
+survey_years <- sort(unique(na.omit(tree_data$year)))
+
+country_ranking   <- sort(table(tree_data$country), decreasing = TRUE)
+top_two_countries <- names(country_ranking)[1:2]
+top_two_records   <- sum(country_ranking[1:2])
+top_two_share     <- round(100 * top_two_records / number_of_records)
+
+note_number("Records in the public file", number_of_records)
+note_number("Baobab records", number_of_baobabs)
+note_number("Non-baobab records", number_of_others)
+note_number("Records of unrecorded tree type", number_untyped)
+note_number("Countries", length(country_names))
+note_number("Country list", paste(country_names, collapse = ", "))
+note_number("Contributed datasets (source files)", number_of_datasets)
+note_number("Earliest survey year", min(survey_years))
+note_number("Latest survey year", max(survey_years))
+note_number("Records without a date", sum(is.na(public_data$date)))
+note_number("Observers named with consent", length(named_observers))
+note_number("Two best-represented countries", paste(top_two_countries, collapse = " and "))
+note_number("Records in the two best-represented countries", top_two_records)
+note_number("Share of records in the two best-represented countries (%)", top_two_share)
+note_number("Records with a photograph", sum(tree_data$has_photograph, na.rm = TRUE))
+note_number("Records with a photograph (%)", round(100 * mean(tree_data$has_photograph, na.rm = TRUE), 1))
+note_number("Records without a stem circumference", sum(is.na(tree_data$circumference_m)))
+for (type in c("baobab", "non-baobab")) {
+  for (measure in c("circumference_m", "height_m", "canopy_area_m2")) {
+    values <- typed_trees[[measure]][typed_trees$tree_type == type]
+    q <- quartiles_of(values)
+    note_number(paste0(type, ": ", measure, " (n)"), sum(!is.na(values)))
+    note_number(paste0(type, ": ", measure, " median"), signif(q[["median"]], 4))
+    note_number(paste0(type, ": ", measure, " lower quartile"), signif(q[["lower"]], 4))
+    note_number(paste0(type, ": ", measure, " upper quartile"), signif(q[["upper"]], 4))
+  }
+}
+if (length(project_team_survey_files) > 0) {
+  by_file <- read_csv(file.path(qaqc_results_folder, "manuscript_table_records_by_file.csv"),
+                      col_types = cols(.default = col_character()), progress = FALSE)
+  team_others <- sum(as.integer(by_file$`non-baobab`[by_file$source_file %in% project_team_survey_files]), na.rm = TRUE)
+  note_number("Non-baobab records from the project-team surveys", team_others)
+  note_number("Non-baobab records from the project-team surveys (%)", round(100 * team_others / number_of_others))
+}
+```
+
+# Overview
+
+This report summarises the public dataset of the *Baobabs in Africa Mapped (BAM) Project*, produced after harmonisation and quality assurance and quality control (QA/QC). The dataset contains `r format_count(number_of_records)` tree observations: `r format_count(number_of_baobabs)` baobabs (*Adansonia digitata*), `r format_count(number_of_others)` non-baobab trees and `r format_count(number_untyped)` trees whose type was not recorded. The observations come from `r if (is.na(number_of_datasets)) "several" else number_of_datasets` contributed datasets, cover `r length(country_names)` countries (`r paste(country_names, collapse = ", ")`) and were made between `r min(survey_years)` and `r max(survey_years)`. `r length(named_observers)` observers agreed to be named publicly.
+
+```{r}
+#| label: tbl-summary
+#| tbl-cap: "Summary of the public dataset."
+knitr::kable(tibble(
+  Measure = c("Tree observations", "Baobab observations", "Non-baobab observations",
+              "Tree type not recorded", "Countries", "Contributed datasets",
+              "Survey years", "Observers named with consent"),
+  Value = c(format_count(c(number_of_records, number_of_baobabs, number_of_others, number_untyped,
+                           length(country_names))),
+            if (is.na(number_of_datasets)) "not available" else format_count(number_of_datasets),
+            paste(min(survey_years), "to", max(survey_years)),
+            format_count(length(named_observers)))
+), format = "pipe", align = "lr")
+```
+
+```{r}
+#| label: species-numbers
+
+non_baobabs <- filter(typed_trees, tree_type == "non-baobab")
+if (all(is.na(non_baobabs$accepted_species_name))) {
+  stop("No non-baobab tree has an accepted species name. Set wfo_backbone_file in ",
+       "1_Harmonise_tree_data.R and render 2_QAQC_BAM_Data.qmd again.", call. = FALSE)
+}
+species_counts <- non_baobabs %>%
+  filter(!is.na(accepted_species_name)) %>%
+  count(accepted_species_name, name = "records") %>%
+  rename(name = accepted_species_name) %>%
+  arrange(desc(records), name)
+species_shown <- head(species_counts, number_of_species_shown)
+non_baobabs_without_name <- sum(is.na(non_baobabs$accepted_species_name))
+note_number("Non-baobab records with an accepted species name", sum(!is.na(non_baobabs$accepted_species_name)))
+note_number("Non-baobab records without an accepted species name", non_baobabs_without_name)
+note_number("Non-baobab species with an accepted name", nrow(species_counts))
+note_number("Most frequent non-baobab species", paste(head(species_counts$name, 5), collapse = "; "))
+```
+
+# Distribution, size and species of the trees
+
+@fig-distribution-size shows where the trees were recorded, how their size differs between baobabs and non-baobab trees, and the most frequent non-baobab species. The two best-represented countries, `r top_two_countries[1]` and `r top_two_countries[2]`, together account for `r format_count(top_two_records)` records (`r top_two_share`%). Baobabs have a median stem circumference of `r describe_distribution(typed_trees$circumference_m[typed_trees$tree_type == "baobab"], "m", 2)`, compared with `r describe_distribution(typed_trees$circumference_m[typed_trees$tree_type == "non-baobab"], "m", 2)` for non-baobab trees. Median heights are `r describe_distribution(typed_trees$height_m[typed_trees$tree_type == "baobab"], "m")` for baobabs and `r describe_distribution(typed_trees$height_m[typed_trees$tree_type == "non-baobab"], "m")` for non-baobab trees, and median canopy areas are `r describe_distribution(typed_trees$canopy_area_m2[typed_trees$tree_type == "baobab"], "m²", 0)` and `r describe_distribution(typed_trees$canopy_area_m2[typed_trees$tree_type == "non-baobab"], "m²", 0)` respectively. Of the `r format_count(number_of_others)` non-baobab records, `r format_count(number_of_others - non_baobabs_without_name)` have an accepted species name; the other `r format_count(non_baobabs_without_name)` (no species recorded, or a name without an exact species-level match) are not shown in panel e.
+
+```{r}
+#| label: fig-distribution-size
+#| fig-cap: !expr paste0("Distribution, size and species of the trees in the BAM public dataset. **a**, Locations of tree observations (Africa Albers equal-area projection); baobabs are drawn on top of non-baobab trees, and the inset enlarges the boxed area, which holds the densest cluster of records; dotted lines join the box to the inset. **b**–**d**, Numbers of trees by stem circumference (**b**), tree height (**c**) and canopy area (**d**), calculated as an ellipse from the two perpendicular crown diameters; circumference and canopy area are on logarithmic axes. n gives the number of trees in each panel; trees whose type was not recorded are not shown in **b**–**d**. **e**, The ", number_of_species_shown, " most frequently recorded non-baobab species, by accepted name in World Flora Online.")
+#| fig-width: 7.205
+#| fig-height: 6.693
+#| out-width: "100%"
+#| fig-pos: "htbp"
+
+sf_use_s2(FALSE)  # planar operations are sufficient for drawing
+# Countries are cropped to the region around Africa before projection, so
+# that polygons crossing the antimeridian draw no stray lines.
+world_countries <- suppressMessages(suppressWarnings(
+  st_crop(st_make_valid(rnaturalearth::ne_countries(scale = "medium", returnclass = "sf")),
+          xmin = -45, xmax = 80, ymin = -55, ymax = 55)))
+map_countries   <- filter(world_countries, continent == "Africa")
+
+tree_points <- tree_data %>%
+  filter(!is.na(latitude), !is.na(longitude)) %>%
+  arrange(tree_type == "baobab") %>%
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326, remove = FALSE)
+
+# The map frame is mainland Africa
+
+minimum_land_area_sq_degrees <- 1
+africa_land_parts <- st_cast(st_geometry(map_countries), "POLYGON")
+land_part_area    <- as.numeric(st_area(st_set_crs(africa_land_parts, NA)))
+africa_main_land  <- africa_land_parts[land_part_area >= minimum_land_area_sq_degrees]
+africa_frame      <- st_bbox(africa_main_land)
+points_frame      <- st_bbox(tree_points)
+map_margin_degrees <- 2
+map_extent <- c(xmin = min(africa_frame[["xmin"]], points_frame[["xmin"]]) - map_margin_degrees,
+                xmax = max(africa_frame[["xmax"]], points_frame[["xmax"]]) + map_margin_degrees,
+                ymin = min(africa_frame[["ymin"]], points_frame[["ymin"]]) - map_margin_degrees,
+                ymax = max(africa_frame[["ymax"]], points_frame[["ymax"]]) + map_margin_degrees)
+
+# Coordinates are written as plain text so the degree sign prints on every
+# system.
+format_longitude <- function(degrees) {
+  paste0(abs(degrees), "\u00b0", ifelse(degrees > 0, "E", ifelse(degrees < 0, "W", "")))
+}
+format_latitude <- function(degrees) {
+  paste0(abs(degrees), "\u00b0", ifelse(degrees > 0, "N", ifelse(degrees < 0, "S", "")))
+}
+
+# box_in_degrees() returns a rectangle in longitude and latitude with many
+# vertices, so that it keeps its shape when projected.
+
+box_in_degrees <- function(xmin, xmax, ymin, ymax, vertices_per_side = 50) {
+  x <- c(seq(xmin, xmax, length.out = vertices_per_side), rep(xmax, vertices_per_side),
+         seq(xmax, xmin, length.out = vertices_per_side), rep(xmin, vertices_per_side))
+  y <- c(rep(ymin, vertices_per_side), seq(ymin, ymax, length.out = vertices_per_side),
+         rep(ymax, vertices_per_side), seq(ymax, ymin, length.out = vertices_per_side))
+  st_sfc(st_polygon(list(cbind(c(x, x[1]), c(y, y[1])))), crs = 4326)
+}
+projected_limits <- function(box) {
+  limits <- st_bbox(st_transform(box, map_projection))
+  list(x = unname(limits[c("xmin", "xmax")]), y = unname(limits[c("ymin", "ymax")]))
+}
+map_limits <- projected_limits(box_in_degrees(map_extent[["xmin"]], map_extent[["xmax"]],
+                                              map_extent[["ymin"]], map_extent[["ymax"]]))
+
+# The inset is centred on the densest 1-degree cell of records, unless a
+# centre is set in inset_centre_degrees.
+
+if (is.null(inset_centre_degrees)) {
+  cell <- paste(floor(tree_points$longitude), floor(tree_points$latitude))
+  densest <- names(which.max(table(cell)))
+  in_densest <- cell == densest
+  inset_centre_degrees <- c(median(tree_points$longitude[in_densest]), median(tree_points$latitude[in_densest]))
+}
+inset_box <- box_in_degrees(inset_centre_degrees[1] - inset_half_width_degrees,
+                            inset_centre_degrees[1] + inset_half_width_degrees,
+                            inset_centre_degrees[2] - inset_half_width_degrees,
+                            inset_centre_degrees[2] + inset_half_width_degrees)
+inset_limits <- projected_limits(inset_box)
+records_in_inset <- sum(lengths(st_intersects(tree_points, inset_box)) > 0)
+note_number("Records inside the inset of Figure 2a", records_in_inset)
+
+# The inset is placed by fractions of the map panel (left, bottom, right,
+# top). Because the map has no expansion, these fractions convert directly to
+# projected map coordinates.
+
+inset_position <- c(left = 0.02, bottom = 0.03, right = 0.40, top = 0.43)
+inset_corners <- c(xmin = map_limits$x[1] + inset_position[["left"]]   * diff(map_limits$x),
+                   xmax = map_limits$x[1] + inset_position[["right"]]  * diff(map_limits$x),
+                   ymin = map_limits$y[1] + inset_position[["bottom"]] * diff(map_limits$y),
+                   ymax = map_limits$y[1] + inset_position[["top"]]    * diff(map_limits$y))
+
+# Corners of the box on the main map, projected: the box is drawn from its
+# longitude and latitude, so its corners are found the same way.
+
+box_corner_points <- st_coordinates(st_transform(
+  st_sfc(st_multipoint(rbind(
+    c(inset_centre_degrees[1] - inset_half_width_degrees, inset_centre_degrees[2] - inset_half_width_degrees),
+    c(inset_centre_degrees[1] - inset_half_width_degrees, inset_centre_degrees[2] + inset_half_width_degrees),
+    c(inset_centre_degrees[1] + inset_half_width_degrees, inset_centre_degrees[2] - inset_half_width_degrees),
+    c(inset_centre_degrees[1] + inset_half_width_degrees, inset_centre_degrees[2] + inset_half_width_degrees))),
+    crs = 4326), map_projection))
+box_corners <- list(bottom_left  = box_corner_points[1, c("X", "Y")],
+                    top_left     = box_corner_points[2, c("X", "Y")],
+                    bottom_right = box_corner_points[3, c("X", "Y")],
+                    top_right    = box_corner_points[4, c("X", "Y")])
+
+# connector_lines() joins the facing sides of the box and the inset: the
+# right side of the inset to the left side of the box when the box lies to
+# the right, and so on. Each line runs between matching corners.
+
+connector_lines <- function(box, inset) {
+  box_x <- range(sapply(box, `[`, 1)); box_y <- range(sapply(box, `[`, 2))
+  pairs <- if (box_x[1] >= inset[["xmax"]]) {
+    list(list(c(inset[["xmax"]], inset[["ymax"]]), box$top_left),
+         list(c(inset[["xmax"]], inset[["ymin"]]), box$bottom_left))
+  } else if (box_x[2] <= inset[["xmin"]]) {
+    list(list(c(inset[["xmin"]], inset[["ymax"]]), box$top_right),
+         list(c(inset[["xmin"]], inset[["ymin"]]), box$bottom_right))
+  } else if (box_y[1] >= inset[["ymax"]]) {
+    list(list(c(inset[["xmin"]], inset[["ymax"]]), box$bottom_left),
+         list(c(inset[["xmax"]], inset[["ymax"]]), box$bottom_right))
+  } else {
+    list(list(c(inset[["xmin"]], inset[["ymin"]]), box$top_left),
+         list(c(inset[["xmax"]], inset[["ymin"]]), box$top_right))
+  }
+  st_sfc(lapply(pairs, function(pair) st_linestring(rbind(unname(pair[[1]]), unname(pair[[2]])))),
+         crs = map_projection)
+}
+inset_connectors <- connector_lines(box_corners, inset_corners)
+
+panel_map <- ggplot() +
+  geom_sf(data = world_countries, fill = "white", colour = "grey75", linewidth = line_width(thin_line_pt)) +
+  geom_sf(data = map_countries, fill = "grey92", colour = "grey55", linewidth = line_width(thin_line_pt)) +
+  geom_sf(data = tree_points, aes(fill = tree_type), shape = 21, colour = "white",
+          stroke = line_width(thin_line_pt) / 2, size = 1.1, alpha = 0.85) +
+  geom_sf(data = inset_box, fill = NA, colour = "black", linewidth = line_width(standard_line_pt)) +
+  geom_sf(data = inset_connectors, colour = "black", linetype = inset_connector_linetype,
+          linewidth = line_width(standard_line_pt)) +
+  coord_sf(crs = map_projection, default_crs = NULL, xlim = map_limits$x, ylim = map_limits$y,
+           expand = FALSE, datum = 4326) +
+  scale_x_continuous(breaks = seq(-20, 60, by = 20), labels = format_longitude) +
+  scale_y_continuous(breaks = seq(-30, 30, by = 15), labels = format_latitude) +
+  scale_tree_fill +
+  guides(fill = "none") +
+  labs(x = NULL, y = NULL, tag = "a") +
+  theme_publication() +
+  theme(panel.background = element_rect(fill = "#eef3f8", colour = NA),
+        axis.line = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "black", linewidth = line_width(standard_line_pt)))
+
+panel_inset <- ggplot() +
+  geom_sf(data = world_countries, fill = "grey92", colour = "grey55", linewidth = line_width(thin_line_pt)) +
+  geom_sf(data = tree_points, aes(fill = tree_type), shape = 21, colour = "white",
+          stroke = line_width(thin_line_pt) / 2, size = 0.8, alpha = 0.85) +
+  coord_sf(crs = map_projection, xlim = inset_limits$x, ylim = inset_limits$y, expand = FALSE, datum = NA) +
+  scale_tree_fill +
+  guides(fill = "none") +
+  theme_void() +
+  theme(panel.background = element_rect(fill = "#eef3f8", colour = NA),
+        panel.border = element_rect(fill = NA, colour = "black", linewidth = line_width(standard_line_pt)))
+
+# The inset sits in the South Atlantic, at the lower left of the map.
+map_with_inset <- panel_map +
+  inset_element(panel_inset, left = inset_position[["left"]], bottom = inset_position[["bottom"]],
+                right = inset_position[["right"]], top = inset_position[["top"]], align_to = "panel",
+                ignore_tag = TRUE)
+
+# histogram_panel() draws the number of trees by one measurement, for baobab
+# and non-baobab trees, so that the larger number of baobab records and any
+# rounding of the values remain visible.
+
+histogram_panel <- function(variable, x_label, tag, log_scale = FALSE, binwidth = NULL, bins = 40) {
+  data <- filter(typed_trees, !is.na(.data[[variable]]))
+  if (log_scale) data <- filter(data, .data[[variable]] > 0)
+  panel <- ggplot(data, aes(x = .data[[variable]], fill = tree_type)) +
+    geom_histogram(position = "identity", alpha = 0.65, colour = NA,
+                   binwidth = binwidth, bins = if (is.null(binwidth)) bins else NULL) +
+    labs(x = x_label, y = "Trees", subtitle = sample_size_label(typed_trees, variable), tag = tag) +
+    scale_tree_fill +
+    scale_y_continuous(labels = scales::label_comma(), expand = expansion(mult = c(0, 0.05))) +
+    theme_publication()
+  if (log_scale) {
+    panel <- panel + scale_x_log10(labels = scales::label_number(drop0trailing = TRUE, big.mark = ","))
+  }
+  panel
+}
+
+panel_circumference <- histogram_panel("circumference_m", "Stem circumference (m)", "b", log_scale = TRUE)
+panel_height        <- histogram_panel("height_m", "Tree height (m)", "c", binwidth = 0.5)
+panel_canopy        <- histogram_panel("canopy_area_m2", expression("Canopy area (m"^2*")"), "d", log_scale = TRUE)
+
+panel_species <- ggplot(species_shown, aes(x = records, y = fct_reorder(name, records))) +
+  geom_col(width = 0.7, fill = tree_type_colours[["non-baobab"]]) +
+  scale_x_continuous(labels = scales::label_comma(),
+                     expand = expansion(mult = c(0, 0.05))) +  # Bars start at zero.
+  labs(x = "Non-baobab trees", y = NULL, tag = "e") +
+  theme_publication() +
+  theme(axis.text.y = element_text(face = "italic"),
+        axis.ticks.y = element_blank())
+
+# The map 
+
+figure_distribution_size <- ((map_with_inset | (panel_circumference / panel_height / panel_canopy)) +
+                               plot_layout(widths = c(2.1, 1))) /
+  panel_species +
+  plot_layout(heights = c(2.4, 1), guides = "collect") &
+  theme(legend.position = "bottom")
+
+save_journal_figure(figure_distribution_size, "figure_2_distribution_size_species",
+                    width_mm = double_column_mm, height_mm = figure_2_height_mm)
+figure_distribution_size
+```
+
+```{r}
+#| label: map-for-webpage
+
+# Transparent map of the observations for the project web page; saved, not shown.
+africa_outline <- st_union(map_countries)
+map_for_webpage <- ggplot() +
+  geom_sf(data = map_countries, colour = "grey60", fill = "grey95", linewidth = 0.2) +
+  geom_sf(data = tree_points, colour = "#1b7837", size = 1.2, alpha = 0.8) +
+  geom_sf(data = africa_outline, colour = "black", fill = NA, linewidth = 0.2) +
+  coord_sf(xlim = unname(map_extent[c("xmin", "xmax")]), ylim = unname(map_extent[c("ymin", "ymax")]), expand = FALSE) +
+  theme_void() +
+  theme(panel.background = element_rect(fill = "transparent", colour = NA),
+        plot.background  = element_rect(fill = "transparent", colour = NA))
+ggsave(file.path(figures_folder, "webpage_map.png"), map_for_webpage,
+       width = webpage_map_size_mm, height = webpage_map_size_mm, units = "mm",
+       dpi = figure_resolution_dpi, bg = "transparent", device = ragg::agg_png)
+```
+
+```{r}
+#| label: environment-data
+
+# Reads the outputs of 4_Environmental_covariates.R so that the figure and the
+# numbers quoted beside it come from the same run.
+
+# PDF keeps the figure as vector graphics in the PDF report; PNG is used for
+# Word or HTML output.
+environment_figure_extension <- if (knitr::is_latex_output()) "pdf" else "png"
+
+# File names written by 4_Environmental_covariates.R (Sections 11 and 12).
+environment_figure_file <- file.path(figures_folder,
+                                     paste0("figure_3_environment.", environment_figure_extension))
+covariates_file <- file.path(environment_results_folder, "baobab_environmental_covariates.csv")
+
+for (needed_file in c(covariates_file, environment_figure_file)) {
+  stop_if_stale(!file.exists(needed_file), paste(basename(needed_file), "was not found."),
+                "4_Environmental_covariates.R")
+}
+# Covariates or a figure older than the public file come from an earlier
+# version of the data.
+stop_if_stale(file.mtime(covariates_file) < file.mtime(public_data_file),
+              "The environmental covariates are older than the public data file.", "4_Environmental_covariates.R")
+stop_if_stale(file.mtime(environment_figure_file) < file.mtime(covariates_file),
+              "Figure 3 is older than the environmental covariates.", "4_Environmental_covariates.R")
+
+# One row per unique baobab location; their records must add up to the
+# baobab records of the public file.
+covariates <- read_csv(covariates_file, show_col_types = FALSE, progress = FALSE)
+stop_if_stale(sum(covariates$records) != sum(tree_data$tree_type == "baobab" & !is.na(tree_data$latitude)),
+              "The covariate file does not hold the baobab records of the public data file.",
+              "4_Environmental_covariates.R")
+
+# Figure 3 and this summary describe the baobabs, not the locations: each
+# location's row is repeated once for each baobab recorded at it, so that
+# baobabs sharing a location share its values.
+baobab_covariates   <- uncount(covariates, records, .remove = FALSE)
+baobabs_in_figure_3 <- nrow(baobab_covariates)
+number_of_locations <- nrow(covariates)
+semi_arid_share     <- round(100 * mean(baobab_covariates$aridity_class == "Semi-arid", na.rm = TRUE))
+protected_share     <- round(100 * mean(baobab_covariates$in_protected_area, na.rm = TRUE))
+
+# The aridity index has no unit, so it is written without one.
+aridity_quartiles <- quartiles_of(baobab_covariates$aridity_index)
+aridity_text <- sprintf("%.2f (IQR %.2f–%.2f)", aridity_quartiles[["median"]], aridity_quartiles[["lower"]],
+                        aridity_quartiles[["upper"]])
+
+note_number("Baobabs in Figure 3", baobabs_in_figure_3)
+note_number("Unique baobab locations", number_of_locations)
+note_number("Semi-arid baobabs (%)", semi_arid_share)
+note_number("Baobabs inside a protected area (%)", protected_share)
+for (measure in c("precipitation_mm", "temperature_c", "aridity_index", "slope_degrees", "sand_percent")) {
+  q <- quartiles_of(baobab_covariates[[measure]])
+  note_number(paste(measure, "median"), signif(q[["median"]], 4))
+  note_number(paste(measure, "lower quartile"), signif(q[["lower"]], 4))
+  note_number(paste(measure, "upper quartile"), signif(q[["upper"]], 4))
+}
+```
+
+# Environment of the baobabs
+
+@fig-environment describes the environment of the `r format_count(baobabs_in_figure_3)` baobabs, recorded at `r format_count(number_of_locations)` unique locations; baobabs that share a location share its values. Mean annual precipitation has a median of `r describe_distribution(baobab_covariates$precipitation_mm, "mm", 0)` and mean annual temperature a median of `r describe_distribution(baobab_covariates$temperature_c, "°C")`. The median aridity index is `r aridity_text`, and `r semi_arid_share`% of baobabs grow in the semi-arid class. The median slope is `r describe_distribution(baobab_covariates$slope_degrees, "°")` and the median topsoil sand content `r sprintf("%.0f%%", quartiles_of(baobab_covariates$sand_percent)[["median"]])`. `r protected_share`% of baobabs lie inside a protected area.
+
+```{r}
+#| label: fig-environment
+#| fig-cap: !expr paste0("Environmental conditions of the baobabs in the BAM public dataset (n = ", format_count(baobabs_in_figure_3), " baobabs at ", format_count(number_of_locations), " unique locations; baobabs that share a location share its values). **a**, Aridity index; **b**, slope; **c**, topsoil (0–20 cm) texture of each baobab on the USDA soil texture triangle, with the share of baobabs given for classes holding at least 5% of them; **d**, mean annual precipitation; **e**, mean annual air temperature; **f**, share of baobabs inside and outside protected areas, overall and for each country, with the number of baobabs (n).")
+#| out-width: "100%"
+#| fig-pos: "htbp"
+
+knitr::include_graphics(environment_figure_file)
+```
+
+```{r}
+#| label: try-data
+
+# Reads the outputs of 3_TRY_comparison_check.R, which compares TRY with the
+# public file, so that the numbers quoted come from the same run.
+try_summary_file   <- file.path(try_results_folder, "try_cross_check_summary.csv")
+try_duplicate_file <- file.path(try_results_folder, "try_bam_duplicate_check.csv")
+for (needed_file in c(try_summary_file, try_duplicate_file)) {
+  stop_if_stale(!file.exists(needed_file), paste(basename(needed_file), "was not found."),
+                "3_TRY_comparison_check.R")
+}
+try_summary <- read_csv(try_summary_file, col_types = cols(.default = col_character()), progress = FALSE)
+try_value <- function(measure) {
+  value <- try_summary$value[try_summary$measure == measure]
+  if (length(value) == 0) NA_character_ else value[1]
+}
+# A comparison made from another version of the public file is out of date;
+# the public file is identified by its MD5 checksum.
+stop_if_stale(!identical(unname(tools::md5sum(public_data_file)), try_value("Public data file MD5 checksum")),
+              "The TRY comparison was not made from the current public data file.", "3_TRY_comparison_check.R")
+
+try_observations        <- try_value("TRY Adansonia observations")
+try_with_coordinates    <- try_value("TRY Adansonia observations with coordinates")
+try_digitata_located    <- try_value("Adansonia digitata observations with coordinates")
+try_probable_duplicates <- try_value("Probable duplicates of BAM records")
+
+# Distance from each georeferenced A. digitata observation in TRY to the
+# nearest BAM baobab, in kilometres.
+try_digitata_distances_km <- read_csv(try_duplicate_file, col_types = cols(.default = col_character()),
+                                      progress = FALSE) %>%
+  filter(str_detect(coalesce(species, ""), fixed("Adansonia digitata")),
+         !is.na(nearest_bam_distance_m), nearest_bam_distance_m != "NA") %>%
+  mutate(distance_km = round(as.numeric(nearest_bam_distance_m) / 1000)) %>%
+  arrange(distance_km) %>%
+  pull(distance_km)
+note_number("TRY release version", try_value("TRY release version"))
+note_number("TRY records in the release", try_value("TRY records in the release"))
+note_number("TRY Adansonia observations", try_observations)
+note_number("TRY Adansonia observations with coordinates", try_with_coordinates)
+note_number("TRY A. digitata observations with coordinates", try_digitata_located)
+note_number("Distances from TRY A. digitata observations to the nearest BAM baobab (km)",
+            paste(try_digitata_distances_km, collapse = "; "))
+note_number("Probable duplicates of BAM records in TRY", try_probable_duplicates)
+
+readr::write_excel_csv(overview_numbers, file.path(figures_folder, "manuscript_overview_numbers.csv"), na = "")
+```
+
+# Overlap with the TRY Plant Trait Database
+
+The TRY release (version `r try_value("TRY release version")`) held `r try_observations` *Adansonia* observations, of which `r try_with_coordinates` had coordinates, including `r try_digitata_located` of *A. digitata*. ``` r if (length(try_digitata_distances_km) > 0) paste0("The nearest BAM baobabs lay ", paste(format_count(try_digitata_distances_km), collapse = " and "), " km from the georeferenced *A. digitata* observations. ") else ""``r try_probable_duplicates ``` TRY observations were classified as probable duplicates of BAM records. A map of the comparison, for checking, is saved by 3_TRY_comparison_check.R in its results folder; it is not a figure of the manuscript.
+
+# Numbers for the manuscript
+
+Every number quoted above, and the sample sizes of Figure 2, are saved in `manuscript_overview_numbers.csv` in the figures folder. The record counts of the processing stages are in `manuscript_numbers.csv` and `table_data_quality.csv` (step 2).
